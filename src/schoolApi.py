@@ -4,7 +4,13 @@ OpenAI SDK 표준 인터페이스를 통해 4대 도구(Tools) 호출 및 응답
 """
 
 import os
+import sys
+from pathlib import Path
 import json
+
+# 프로젝트 루트를 sys.path에 추가하여 어디서든 실행 가능하도록 설정
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
 from openai import OpenAI
 from AI.src.tools import resolve_station, get_elevator_status, plan_trip, get_broken_elevators
 
@@ -12,7 +18,7 @@ from AI.src.tools import resolve_station, get_elevator_status, plan_trip, get_br
 # 환경 변수 FACTCHAT_API_KEY가 있으면 우선 사용, 없으면 직접 입력
 API_KEY = os.getenv("FACTCHAT_API_KEY", "YOUR_API_KEY")
 BASE_URL = os.getenv("FACTCHAT_BASE_URL", "https://factchat-cloud.mindlogic.ai/v1/gateway")
-MODEL_NAME = os.getenv("FACTCHAT_MODEL", "claude-sonnet-5")
+MODEL_NAME = os.getenv("FACTCHAT_MODEL", "gpt-5.1")
 
 client = OpenAI(
     api_key=API_KEY,
