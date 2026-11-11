@@ -1,6 +1,8 @@
 # AI 파트 기술 명세서 및 개발 진행 계획서 (AI Development Spec)
 
 > 본 문서는 `AI/AI파트_설계_검토.md`에서 도출된 설계 검토 결과 및 수정안을 기반으로, 실제 구현에 착수할 수 있도록 구체적인 아키텍처, 도구 스키마, 오케스트레이션 파이프라인, R&R, 개발 마일스톤을 정의한 기술 문서이다.
+>
+> 이 문서는 **목표 설계**를 다룬다. 현재 코드가 어디까지 구현되었고 명세와 어떻게 다른지는 [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md)를 참고한다.
 
 ---
 
@@ -21,6 +23,7 @@
 5. **이중 안전장치 (환각 가드 & 규칙 기반 폴백)**
    - 생성된 자연어 답변 속의 역명과 시각이 실제 도구 결과에 존재하는지 백엔드에서 정규식으로 교차 검증한다.
    - LLM API 타임아웃(2.5초 초과) 또는 장애 발생 시, 프로토타입의 규칙 기반 엔진(`ai-agent.js` 로직)을 Python으로 이식한 엔진으로 즉각 폴백한다.
+   - ※ 현재 `src/config.py`의 `LLM_TIMEOUT_SECONDS` 기본값은 3.0초로, 이 문서의 2.5초와 다르다. 오케스트레이터 구현 전에 한 값으로 확정해야 한다.
 
 ---
 
@@ -254,7 +257,7 @@ sequenceDiagram
     "breakdown": {
       "home_walk": 7,
       "station_entry_elevator": 3,
-      "worst_case_wait": 4,        # 배차 간격(3분) + 안전 여유(1분) 적용
+      "worst_case_wait": 4,        # 배차 간격(3분) + 안전 여유(1분) 적용 (※ 현재 Mock 구현은 안전 여유 2분 → 5분)
       "subway_ride": 24,
       "transfer_walk": 0,
       "exit_elevator": 3
@@ -370,7 +373,7 @@ LLM이 생성한 `text`에 대해 백엔드가 2차 필터링을 수행한다:
    - 불일치 발생(예: 도구 결과는 14:48 출발인데 텍스트는 14:30 출발이라고 씀) 시, LLM 텍스트를 폐기하고 도구 결과 기반의 안전한 표준 템플릿 문장으로 치환한다.
 
 ### 6.2 규칙 기반 폴백 엔진 (Rule-based Fallback)
-- 프로토타입 `Prototype/js/ai-agent.js`의 의도 판별 및 정규식 로직을 Python `FallbackEngine` 클래스로 포팅.
+- 프로토타입 `FE/Prototype-v2/js/ai-agent.js`의 의도 판별 및 정규식 로직을 Python `FallbackEngine` 클래스(`src/fallback_engine.py`)로 포팅. 의도 분류 점수표와 시각 파싱 규칙은 [`IMPLEMENTATION_STATUS.md` §4](./IMPLEMENTATION_STATUS.md#4-폴백-엔진-fallbackengineprocess-동작) 참고.
 - LLM API 타임아웃(2.5초), Rate Limit(429), Network Error 발생 시 즉시 `FallbackEngine.process()`를 호출하여 50ms 이내에 동일한 스키마의 응답을 반환한다.
 
 ---
@@ -436,7 +439,9 @@ gantt
 
 ### Phase 2: 오케스트레이터 및 Function Calling 연동 (D+3 ~ D+4)
 - FastAPI 기반 `/api/chat` 엔드포인트 구현.
-- OpenRouter / Gemini API 클라이언트 연동 및 비동기 처리(`async/await`).
+- LLM 클라이언트 연동 및 비동기 처리(`async/await`).
+  - 초기 계획은 OpenRouter / Gemini였으나, 무료 모델이 불안정하여 **학교 마인드로직 FactChat 게이트웨이**(OpenAI 호환 API, `claude-sonnet-5` / `gpt-4o-mini` 등)로 전환했다. 연동 검증 스크립트: `src/schoolApi.py`.
+  - NVIDIA 게이트웨이(`integrate.api.nvidia.com`, `z-ai/glm-5.3-flash`)도 후보로 도구 호출 여부를 실험 중이다: `src/nvidiaApi.py`.
 - 세션 슬롯 메모리(인메모리 TTL 딕셔너리) 및 시스템 프롬프트 동적 주입 구현.
 
 ### Phase 3: 안전 가드 및 백엔드 도메인 서비스 연동 (D+5 ~ D+6)

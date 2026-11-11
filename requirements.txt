@@ -1,0 +1,7 @@
+# 우왕톤 7팀 AI 파트 의존성
+# 설치: pip install -r AI/requirements.txt
+# 검증 환경: Python 3.12, pydantic 2.8, openai 3.49, pytest
+
+pydantic>=2.0          # 도구 입출력 스키마 (src/models.py)
+openai>=1.0            # OpenAI 호환 SDK로 FactChat / NVIDIA 게이트웨이 호출 (src/schoolApi.py, src/nvidiaApi.py)
+pytest>=7.0            # 단위 테스트 (tests/)

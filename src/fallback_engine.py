@@ -17,6 +17,13 @@ from .mock_data import STATIONS, ALIASES, ELEVATORS
 
 
 class FallbackEngine:
+    """LLM 없이 정규식 규칙만으로 ChatResponse를 만드는 폴백 엔진.
+
+    모든 메서드는 classmethod이므로 인스턴스 없이 ``FallbackEngine.process(...)``로 호출합니다.
+    의도 분류 점수표와 시각 파싱 규칙은 AI/docs/IMPLEMENTATION_STATUS.md §4 참고.
+    """
+
+    # 출발역을 알 수 없을 때 쓰는 기본 출발역 (시스템 프롬프트 명세와 동일하게 신도림)
     DEFAULT_ORIGIN = "sindorim"
 
     # 정규식 패턴 정의 (Prototype-v2의 RX 그대로 포팅)
@@ -145,7 +152,20 @@ class FallbackEngine:
         current_time: Optional[str] = None,
         session_ctx: Optional[Dict[str, Any]] = None
     ) -> ChatResponse:
-        """사용자 메시지를 처리하여 완전한 ChatResponse를 생성합니다."""
+        """사용자 메시지를 처리하여 완전한 ChatResponse를 생성합니다.
+
+        처리 순서: 역 추출 → 시각 파싱 → 의도 분류 → 지칭어("거기" 등) 문맥 보정 → 의도별 응답 조립.
+
+        Args:
+            message: 사용자 원문 메시지.
+            session_id: 응답에 그대로 실어 보낼 세션 ID.
+            current_time: 현재 사용하지 않습니다. (시간 계산은 서버의 현재 시각 기준)
+            session_ctx: {"last_station_id": ...} 형태의 세션 슬롯. 읽기만 하며,
+                응답 후 슬롯 갱신은 호출하는 쪽에서 해야 합니다.
+
+        Returns:
+            metadata.engine="fallback", fallback_used=True인 ChatResponse.
+        """
         text = message.strip()
         ctx = session_ctx or {}
 

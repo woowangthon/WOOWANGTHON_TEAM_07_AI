@@ -2,6 +2,10 @@
 
 명세: AI/docs/AI_DEVELOPMENT_SPEC.md
 규칙: LLM은 해석만 하고 실제 계산은 도구 함수가 수행합니다.
+
+현재는 ``mock_data.py`` 기반 Mock 구현입니다. 백엔드 도메인 서비스(그래프 탐색,
+실시간 엘리베이터 캐시)가 준비되면 같은 입출력 모델을 유지한 채 내부만 교체합니다.
+Mock 구현의 단순화 사항과 알려진 이슈는 AI/docs/IMPLEMENTATION_STATUS.md 참고.
 """
 
 from datetime import datetime, timedelta
@@ -23,7 +27,16 @@ from .mock_data import (
 # 1. resolve_station
 # -----------------------------------------------------------------------------
 def resolve_station(query: str) -> ResolveStationOutput:
-    """사용자의 자연어 검색어를 정규화하여 고유 station_id 및 커버리지를 판정합니다."""
+    """사용자의 자연어 검색어를 정규화하여 고유 station_id 및 커버리지를 판정합니다.
+
+    공백을 제거하고 끝의 '역'을 뗀 뒤, 아래 순서로 처음 일치하는 규칙을 반환합니다.
+      1. 별칭 사전(원문)            → SUPPORTED, confidence 1.0
+      2. 별칭 사전('역' 제거)        → SUPPORTED, confidence 0.95
+      3. 표준 역명 또는 역 ID 일치   → SUPPORTED, confidence 1.0
+      4. 미지원 노선/지역 키워드 포함 → OUT_OF_COVERAGE (station_id=None), confidence 0.9
+      5. 표준 역명과 부분 일치       → SUPPORTED, confidence 0.8 (STATIONS 순서상 첫 번째)
+      6. 그 외                      → NOT_FOUND, confidence 0.0
+    """
     q = query.strip()
     clean_q = re.sub(r"\s+", "", q)
     base_name = re.sub(r"역$", "", clean_q)
@@ -79,7 +92,13 @@ def resolve_station(query: str) -> ResolveStationOutput:
 # 2. get_elevator_status
 # -----------------------------------------------------------------------------
 def get_elevator_status(station_id: str) -> ElevatorStatusOutput:
-    """특정 역의 구간 단위 엘리베이터 상태와 기준 시각을 반환합니다."""
+    """특정 역의 구간 단위 엘리베이터 상태와 기준 시각을 반환합니다.
+
+    overall_status는 고장(AVAILABLE이 아닌) 구간 개수로 정합니다:
+    0개 → AVAILABLE, 전부 → UNAVAILABLE, 그 외 → PARTIAL.
+    엘리베이터 데이터가 없는 역은 오류 없이 UNKNOWN을 반환합니다.
+    Mock 단계라 updated_at은 '현재 − 5분', freshness_minutes는 5로 고정입니다.
+    """
     st = STATIONS.get(station_id)
     st_name = st["name"] if st else station_id
     now = datetime.now()
@@ -196,7 +215,12 @@ def _find_2line_path(start_id: str, end_id: str) -> Tuple[List[str], int]:
 
 
 def _find_alternative(station_id: str) -> Optional[DetourInfo]:
-    """고장 역에 대한 인접 정상 대체역을 탐색합니다."""
+    """고장 역에 대한 인접 정상 대체역을 탐색합니다.
+
+    1. ALTERNATIVE_TIPS에 '{고장역}>{대체역}' 키가 있으면 그 팁을 사용 (800m / 10분 고정값)
+    2. 없으면 2호선 순환선의 다음 역(시계 방향)을 대체역으로 사용 (950m / 12분 고정값)
+    대체역의 엘리베이터 상태는 확인하지 않으며, target_type은 항상 "end"입니다.
+    """
     key_prefix = f"{station_id}>"
     for k, tip in ALTERNATIVE_TIPS.items():
         if k.startswith(key_prefix):
@@ -240,7 +264,23 @@ def plan_trip(
     depart_at: Optional[str] = None,
     home_walk_min: Optional[int] = 7
 ) -> PlanTripOutput:
-    """경로 탐색, 엘리베이터 고장 우회, 출발 시각 역산을 원스톱으로 계산합니다."""
+    """경로 탐색, 엘리베이터 고장 우회, 출발 시각 역산을 원스톱으로 계산합니다.
+
+    총 소요(분) = 도보(home_walk_min) + 역 진입(3) + 최악 대기(배차 3 + 여유 2)
+                 + 정거장 수 × 2 + 출구 엘리베이터(3)
+
+    모드:
+        arrive_by 있음  → 역산. 도착 시각이 이미 지났으면 다음 날로 간주합니다.
+                          형식이 잘못되면 예외 없이 순방향 모드로 넘어갑니다.
+        arrive_by 없음  → 순방향. depart_at(없으면 현재 시각)부터 계산합니다.
+                          depart_at 형식이 잘못되면 ValueError가 발생합니다.
+
+    Mock 단계 제약:
+        - 2호선 순환선만 경로를 계산합니다. 순환선 밖 역은 1정거장으로 처리합니다.
+        - 환승을 계산하지 않습니다 (transfers=0, 단일 leg).
+        - 도착역 고장 시에만 대체역을 찾고, 출발역 고장은 경고만 추가합니다.
+        - 첫차/막차를 반영하지 않으며 is_possible은 항상 True입니다.
+    """
     home_walk = home_walk_min if home_walk_min is not None else TIMING_PARAMS["home_walk"]
     entry_wait = TIMING_PARAMS["station_entry_elevator"]
     worst_wait = TIMING_PARAMS["headway_line2"] + TIMING_PARAMS["safety_margin"]  # 3 + 2 = 5분 (보수적)

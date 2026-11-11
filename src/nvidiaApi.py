@@ -1,3 +1,19 @@
+"""NVIDIA API 게이트웨이 Function Calling 호출 테스트 스크립트 (실험용).
+
+NVIDIA 게이트웨이(https://integrate.api.nvidia.com/v1)의 ``z-ai/glm-5.3-flash`` 모델이
+도구를 호출하는지만 확인합니다. ``resolve_station`` 도구 하나만 정의하며,
+도구를 실제로 실행하거나 2차 호출을 하지는 않습니다. (전체 왕복은 ``schoolApi.py`` 참고)
+
+실행 (PowerShell):
+    $env:NVIDIA_API_KEY = "nvapi-..."
+    $env:PYTHONIOENCODING = "utf-8"   # Windows 콘솔에서 이모지 출력 오류 방지
+    python AI/src/nvidiaApi.py
+
+주의:
+    API 호출 코드가 모듈 최상위에 있어 import만 해도 네트워크 요청이 나갑니다.
+    다른 모듈에서 import하지 말고 단독 스크립트로만 실행하세요.
+"""
+
 import os
 from openai import OpenAI
 

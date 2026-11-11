@@ -1,6 +1,25 @@
 """학교 마인드로직 FactChat 게이트웨이(Claude Sonnet 5 / GPT-4o-mini) 도구 호출 테스트 스크립트.
 
-OpenAI SDK 표준 인터페이스를 통해 4대 도구(Tools) 호출 및 응답 루프를 검증합니다.
+OpenAI SDK 표준 인터페이스를 통해 도구(Tools) 호출 및 응답 루프를 검증합니다.
+
+흐름 (고정 질의 "강남역 지금 휠체어로 엘리베이터 탈 수 있어?" 1회):
+    1차 호출(tool_choice="auto") → 모델이 요청한 도구를 ``tools.py``로 실제 실행
+    → 결과를 ``role="tool"`` 메시지로 추가 → 2차 호출로 최종 안내 문장 출력
+
+실행 (PowerShell, 어느 폴더에서든 가능):
+    $env:FACTCHAT_API_KEY = "발급받은키"
+    $env:PYTHONIOENCODING = "utf-8"   # Windows 콘솔에서 이모지 출력 오류 방지
+    python AI/src/schoolApi.py
+
+환경 변수:
+    FACTCHAT_API_KEY   필수. 없으면 안내만 출력하고 종료.
+    FACTCHAT_BASE_URL  기본값 https://factchat-cloud.mindlogic.ai/v1/gateway
+    FACTCHAT_MODEL     기본값 gpt-5.1 (※ config.py / .env.example의 기본값 claude-sonnet-5와 다름)
+
+제약:
+    - 명세의 4개 도구 중 3개(resolve_station, get_elevator_status, plan_trip)만 모델에 노출합니다.
+      plan_trip도 start_id / end_id / arrive_by만 정의되어 있습니다.
+    - 도구 호출은 1라운드만 처리합니다. 2차 호출에서 모델이 또 도구를 요청하면 처리하지 않습니다.
 """
 
 import os

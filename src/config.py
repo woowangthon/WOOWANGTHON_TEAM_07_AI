@@ -1,6 +1,12 @@
 """AI 서비스 환경 설정 모듈.
 
 학교 마인드로직 팩트챗(FactChat) 게이트웨이 및 모델 설정을 관리합니다.
+
+참고:
+    - 값은 import 시점의 OS 환경 변수에서 읽습니다. ``.env`` 파일은 자동으로 읽지 않습니다.
+    - 아직 어떤 모듈도 이 설정을 import하지 않습니다. (``schoolApi.py``는 자체 기본값 사용)
+      향후 FastAPI 오케스트레이터가 ``from AI.src.config import settings``로 사용할 예정입니다.
+    - ``LLM_TIMEOUT_SECONDS`` 기본값 3.0초는 명세서의 2.5초와 다르므로 확정이 필요합니다.
 """
 
 import os
