@@ -1,40 +1,69 @@
 """AI 서비스 환경 설정 모듈.
 
-학교 마인드로직 팩트챗(FactChat) 게이트웨이 및 모델 설정을 관리합니다.
+LLM 게이트웨이(학교 FactChat, NVIDIA) 접속 정보와 비기능 요구사항 값을 관리합니다.
 
-참고:
-    - 값은 import 시점의 OS 환경 변수에서 읽습니다. ``.env`` 파일은 자동으로 읽지 않습니다.
-    - 아직 어떤 모듈도 이 설정을 import하지 않습니다. (``schoolApi.py``는 자체 기본값 사용)
-      향후 FastAPI 오케스트레이터가 ``from AI.src.config import settings``로 사용할 예정입니다.
-    - ``LLM_TIMEOUT_SECONDS`` 기본값 3.0초는 명세서의 2.5초와 다르므로 확정이 필요합니다.
+값을 읽는 순서: OS 환경 변수 → AI/.env 파일 → 아래 기본값.
+(.env는 이미 설정된 환경 변수를 덮어쓰지 않습니다. 별도 패키지 없이 KEY=VALUE 줄만 읽습니다.)
 """
 
 import os
+from pathlib import Path
+from typing import Dict
+
 from pydantic import BaseModel, Field
+
+ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
+
+def load_env_file(path: Path = ENV_FILE) -> None:
+    """KEY=VALUE 형식의 .env 파일을 읽어 아직 없는 환경 변수만 채웁니다."""
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip().strip('"').strip("'")
+        if value.startswith("your_"):  # .env.example의 자리표시자를 그대로 둔 경우
+            continue
+        os.environ.setdefault(key.strip(), value)
+
+
+load_env_file()
+
+
+def _env(key: str, default: str = "") -> str:
+    return os.getenv(key, default)
 
 
 class Settings(BaseModel):
-    # 학교 마인드로직 FactChat 게이트웨이 설정
-    FACTCHAT_API_KEY: str = Field(
-        default_factory=lambda: os.getenv("FACTCHAT_API_KEY", "")
-    )
+    # 학교 마인드로직 FactChat 게이트웨이 (OpenAI 호환 API)
+    FACTCHAT_API_KEY: str = Field(default_factory=lambda: _env("FACTCHAT_API_KEY"))
     FACTCHAT_BASE_URL: str = Field(
-        default_factory=lambda: os.getenv(
-            "FACTCHAT_BASE_URL", "https://factchat-cloud.mindlogic.ai/v1/gateway"
-        )
+        default_factory=lambda: _env("FACTCHAT_BASE_URL", "https://factchat-cloud.mindlogic.ai/v1/gateway")
     )
-    # 지원 모델: "claude-sonnet-5" 또는 "gpt-4o-mini"
-    FACTCHAT_MODEL: str = Field(
-        default_factory=lambda: os.getenv("FACTCHAT_MODEL", "claude-sonnet-5")
-    )
+    FACTCHAT_MODEL: str = Field(default_factory=lambda: _env("FACTCHAT_MODEL", "gpt-5.1"))
+
+    # NVIDIA API 게이트웨이 (OpenAI 호환 API, 비교 실험용)
+    NVIDIA_API_KEY: str = Field(default_factory=lambda: _env("NVIDIA_API_KEY"))
+    NVIDIA_BASE_URL: str = Field(default_factory=lambda: _env("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1"))
+    NVIDIA_MODEL: str = Field(default_factory=lambda: _env("NVIDIA_MODEL", "z-ai/glm-5.3-flash"))
 
     # 비기능 요구사항
+    # ※ 명세(AI_DEVELOPMENT_SPEC.md)는 2.5초. 오케스트레이터 구현 시 팀에서 확정할 것.
     LLM_TIMEOUT_SECONDS: float = Field(
         default=3.0, description="LLM 응답 타임아웃 (초). 초과 시 FallbackEngine으로 즉시 전환"
     )
-    SESSION_TTL_MINUTES: int = Field(
-        default=30, description="세션 슬롯 캐시 유지 시간"
-    )
+    SESSION_TTL_MINUTES: int = Field(default=30, description="세션 슬롯 캐시 유지 시간")
+
+    def provider(self, name: str) -> Dict[str, str]:
+        """게이트웨이 이름("factchat" | "nvidia")으로 api_key / base_url / model을 반환합니다."""
+        if name == "factchat":
+            return {"api_key": self.FACTCHAT_API_KEY, "base_url": self.FACTCHAT_BASE_URL, "model": self.FACTCHAT_MODEL}
+        if name == "nvidia":
+            return {"api_key": self.NVIDIA_API_KEY, "base_url": self.NVIDIA_BASE_URL, "model": self.NVIDIA_MODEL}
+        raise ValueError(f"알 수 없는 게이트웨이: {name} (factchat | nvidia)")
 
 
 settings = Settings()

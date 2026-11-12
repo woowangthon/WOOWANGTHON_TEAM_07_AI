@@ -1,11 +1,15 @@
 """AI 파트 데이터 모델 및 도구(Function Calling) 입출력 스키마.
 
-AI/docs/AI_DEVELOPMENT_SPEC.md 명세를 100% 준수합니다.
+명세: AI/docs/AI_DEVELOPMENT_SPEC.md §3(도구), §4(/api/chat).
+*Input 모델은 LLM에 노출되는 도구 파라미터 스키마의 원본입니다 (src/tool_registry.py가 변환).
 """
 
 from datetime import datetime
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
+
+# "HH:MM" 24시간제 (00:00 ~ 23:59)
+HHMM_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
 
 
 # -----------------------------------------------------------------------------
@@ -24,7 +28,7 @@ class ResolveStationOutput(BaseModel):
     coverage: Literal["SUPPORTED", "OUT_OF_COVERAGE", "NOT_FOUND"] = Field(
         ..., description="서비스 커버리지 여부 (1~8호선 역 단위)"
     )
-    confidence: float = Field(default=1.0, description="매칭 신뢰도 (0.0~1.0)")
+    confidence: float = Field(default=1.0, description="매칭 신뢰도 (1.0=정확 일치, 0.95=별칭, 0.9=미지원 키워드, 0.8=접두어 일치, 0.0=없음)")
 
 
 # 1-2. get_elevator_status
@@ -76,9 +80,17 @@ class BrokenElevatorsOutput(BaseModel):
 class PlanTripInput(BaseModel):
     start_id: str = Field(..., description="출발역 ID")
     end_id: str = Field(..., description="도착역 ID")
-    arrive_by: Optional[str] = Field(None, description="도착 희망 시각 (HH:MM 형식)")
-    depart_at: Optional[str] = Field(None, description="출발 희망 시각 (HH:MM 형식)")
-    home_walk_min: Optional[int] = Field(7, description="출발지에서 역까지 도보 소요 시간(분)")
+    arrive_by: Optional[str] = Field(
+        None, pattern=HHMM_PATTERN,
+        description="도착 희망 시각 (HH:MM, 24시간제). 있으면 출발 시각을 역산합니다."
+    )
+    depart_at: Optional[str] = Field(
+        None, pattern=HHMM_PATTERN,
+        description="출발 희망 시각 (HH:MM, 24시간제). arrive_by가 없을 때만 사용. 둘 다 없으면 지금 출발."
+    )
+    home_walk_min: Optional[int] = Field(
+        7, ge=0, le=120, description="출발지에서 출발역까지 도보 소요 시간(분). 기본값 7"
+    )
 
 
 class RouteLeg(BaseModel):
@@ -118,7 +130,7 @@ class TripBreakdown(BaseModel):
 
 
 class PlanTripOutput(BaseModel):
-    is_possible: bool
+    is_possible: bool = Field(..., description="False면 경로 계산을 지원하지 않는 구간이며, 시간 값은 신뢰할 수 없음 (warnings에 사유)")
     departure_time: str
     board_time: str
     arrival_time: str
@@ -135,12 +147,14 @@ class PlanTripOutput(BaseModel):
 # -----------------------------------------------------------------------------
 
 class ActionPayload(BaseModel):
+    """FE가 버튼으로 렌더링하는 액션. LLM이 아니라 백엔드가 도구 결과로 직접 만듭니다."""
     type: Literal["openStation", "showAlternative", "openTime"]
     label: str
     payload: dict
 
 
 class ToolCallRecord(BaseModel):
+    """응답에 함께 실어 보내는 실제 도구 호출 기록 (디버깅·FE 표시용)."""
     name: str
     args: dict
 
@@ -148,7 +162,7 @@ class ToolCallRecord(BaseModel):
 class ChatRequest(BaseModel):
     session_id: str = Field(default="default_session")
     message: str
-    current_time: Optional[str] = None  # HH:MM
+    current_time: Optional[str] = Field(None, pattern=HHMM_PATTERN, description="기준 시각 (HH:MM). 없으면 서버 현재 시각")
 
 
 class ChatResponseMetadata(BaseModel):

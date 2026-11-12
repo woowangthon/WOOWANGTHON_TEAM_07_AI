@@ -1,129 +1,117 @@
 # AI 파트 구현 현황 및 동작 상세 (Implementation Status)
 
-> 이 문서는 **현재 코드가 실제로 어떻게 동작하는지**를 정리한다. 목표 설계는 [`AI_DEVELOPMENT_SPEC.md`](./AI_DEVELOPMENT_SPEC.md)에 있고, 이 문서는 그 설계 대비 지금 어디까지 구현되었는지, 어떤 단순화와 이슈가 있는지를 다룬다.
+> 이 문서는 **현재 코드가 실제로 어떻게 동작하는지**를 정리한다. 목표 설계는 [`AI_DEVELOPMENT_SPEC.md`](./AI_DEVELOPMENT_SPEC.md)에 있다.
+> 코드 동작을 바꾸면 이 문서의 해당 절도 같이 고친다.
 >
-> 기준 커밋: `df0f2a2` (2026-11-12) · 단위 테스트 11건 통과
+> 최종 갱신: 2026-11-12 · 단위 테스트 68건 통과
 
 ---
 
-## 1. 한눈에 보는 구현 상태
+## 1. 구현 상태
 
-| 구성 요소 | 명세 위치 | 상태 | 구현 파일 |
+| 구성 요소 | 명세 | 상태 | 파일 |
 |---|---|---|---|
-| 도구 4종 입출력 스키마 | §3 | ✅ 완료 | `src/models.py` |
-| 도구 4종 로직 | §3 | ✅ Mock 기반 완료 (실데이터/그래프 미연동) | `src/tools.py`, `src/mock_data.py` |
-| 규칙 기반 폴백 엔진 | §6.2 | ✅ 완료 | `src/fallback_engine.py` |
-| `/api/chat` 요청/응답 모델 | §4 | ✅ 스키마만 | `src/models.py` (`ChatRequest`, `ChatResponse`) |
-| LLM 게이트웨이 연동 | §9 Phase 2 | 🔄 실험 스크립트만 | `src/schoolApi.py`, `src/nvidiaApi.py` |
-| 환경 설정 | — | 🔄 작성됨, 미사용 | `src/config.py` |
-| FastAPI `/api/chat` 엔드포인트 | §4 | ⏳ 미구현 | — |
-| 세션 슬롯 메모리 (TTL 30분) | §5.2 | ⏳ 미구현 (`SessionContext` 모델도 아직 없음) | — |
-| 시스템 프롬프트 동적 주입 | §5.1 | ⏳ 미구현 (실험 스크립트에 축약본만) | — |
+| 도구 4종 입출력 스키마 | §3 | ✅ | `src/models.py` |
+| 도구 4종 로직 | §3 | ✅ Mock 데이터 기반 | `src/tools.py`, `src/mock_data.py` |
+| LLM용 도구 정의 + 실행기 | §3 | ✅ | `src/tool_registry.py` |
+| 시스템 프롬프트 | §5.1 | ✅ 템플릿 | `src/prompts.py` |
+| 규칙 기반 폴백 엔진 | §6.2 | ✅ | `src/fallback_engine.py` |
+| 환경 설정 (`.env` 자동 로딩) | — | ✅ | `src/config.py` |
+| LLM 게이트웨이 왕복 데모 | §9 Phase 2 | ✅ 실험용 | `scripts/llm_demo.py` |
+| `/api/chat` 요청/응답 모델 | §4 | ✅ 스키마만 | `src/models.py` |
+| FastAPI `/api/chat` 엔드포인트 (오케스트레이터) | §4 | ⏳ 미구현 | — |
+| 세션 슬롯 메모리 (TTL 30분) | §5.2 | ⏳ 미구현 (`SessionContext` 모델 없음) | — |
+| 타임아웃 → 폴백 전환 | §6.2 | ⏳ 미구현 (설정값만 있음) | — |
 | 후처리 환각 검증기 (Guard) | §6.1 | ⏳ 미구현 | — |
-| 타임아웃 → 폴백 전환 | §6.2 | ⏳ 미구현 (설정값만 존재) | — |
 | 50문항 벤치마크 | §8 | ⏳ 미구현 | — |
+| 백엔드 실데이터·그래프 연동 | §7 | ⏳ BE 대기 | — |
 
 ---
 
-## 2. 모듈별 역할
+## 2. 도구별 실제 동작
 
-| 모듈 | 역할 | 비고 |
-|---|---|---|
-| `models.py` | 도구 입출력, `ChatRequest`/`ChatResponse`, `ActionPayload` 등 Pydantic v2 모델 | `ActionPayload.type`은 `openStation` / `showAlternative` / `openTime` 세 가지만 허용 |
-| `mock_data.py` | `LINES`(1~8호선 색상), `LINE_2_LOOP`(2호선 순환 43역), `STATIONS`(30역), `ALIASES`, `ELEVATORS`(9역), `ALTERNATIVE_TIPS`(5쌍), `TIMING_PARAMS` | `FE/Prototype-v2/js/mock-data.js` 기반 |
-| `tools.py` | 도구 4종. 모두 `models.py`의 출력 모델 인스턴스를 반환 | LLM 연동 시 `.model_dump()`로 직렬화해 전달 |
-| `fallback_engine.py` | 정규식 점수 기반 의도 분류 → 도구 호출 → 템플릿 문장 + 액션 데이터 조립 | `FE/Prototype-v2/js/ai-agent.js` 포팅 |
-| `config.py` | `Settings` (FactChat 키/URL/모델, `LLM_TIMEOUT_SECONDS=3.0`, `SESSION_TTL_MINUTES=30`) | 현재 어떤 모듈도 import하지 않음 |
-| `schoolApi.py` | FactChat 게이트웨이로 "도구 호출 → 도구 실행 → 2차 호출" 왕복 1회 실행 | 단독 실행 스크립트 |
-| `nvidiaApi.py` | NVIDIA 게이트웨이(`z-ai/glm-5.3-flash`)가 도구를 호출하는지만 확인 | 모듈 최상위에서 바로 API를 호출하므로 **import하면 안 됨** |
+LLM은 `tool_registry.execute_tool(name, args)`로 도구를 실행한다. 인자를 `*Input` 모델로 검증하고, 실패하거나 도구가 `ValueError`를 내면 예외 대신 `{"error": "..."}`를 돌려준다.
 
----
+### 2.1 `resolve_station(query)`
 
-## 3. 도구별 실제 동작
-
-### 3.1 `resolve_station(query)`
-
-입력에서 공백을 모두 제거(`clean_q`)하고, 끝의 `역`을 뗀 값(`base_name`)을 만든 뒤 아래 순서로 처음 걸리는 규칙을 반환한다.
+입력에서 공백과 노선 표기(`2호선`, `(1호선)`)를 지우고 끝의 `역`을 뗀 뒤, 처음 걸리는 규칙을 반환한다.
 
 | 순서 | 규칙 | coverage | confidence |
 |---|---|---|---|
-| 1 | `clean_q`가 `ALIASES`에 있음 | SUPPORTED | 1.0 |
-| 2 | `base_name`이 `ALIASES`에 있음 | SUPPORTED | 0.95 |
-| 3 | `STATIONS`의 표준 역명 또는 ID와 정확히 일치 | SUPPORTED | 1.0 |
-| 4 | 미지원 키워드 포함 (`판교`, `정자`, `광교`, `신분당선`, `9호선`, `봉은사`, `선정릉`, `여의도`, `KTX`, `부산`, `대전`) | OUT_OF_COVERAGE (`station_id=None`, `name`=걸린 키워드) | 0.9 |
-| 5 | 부분 일치 (`base_name ⊂ 역명` 또는 `역명 ⊂ base_name`), `STATIONS` 순서상 첫 번째 | SUPPORTED | 0.8 |
-| 6 | 그 외 | NOT_FOUND (`name`=원본 query) | 0.0 |
+| 1 | 표준 역명 또는 역 ID와 정확히 일치 | SUPPORTED | 1.0 |
+| 2 | 별칭(`ALIASES`) 일치 — 예: 홍대, 고터, 동역사, 신천 | SUPPORTED | 0.95 |
+| 3 | 미지원 키워드 포함 (`OUT_OF_COVERAGE_KEYWORDS`: 판교, 신분당선, 9호선, KTX 등) | OUT_OF_COVERAGE (`station_id=None`) | 0.9 |
+| 4 | 표준 역명의 **앞부분**과 일치하는 역이 **정확히 하나** (2글자 이상) — 예: 동대문역사 | SUPPORTED | 0.8 |
+| 5 | 그 외. 후보가 여러 개인 경우(예: 을지로)와 1글자 입력 포함 | NOT_FOUND | 0.0 |
 
-- "선릉 2호선", "시청 1호선"처럼 노선이 붙은 입력은 5번(부분 일치)으로 해석된다. 노선 정보는 결과에 반영되지 않는다.
-- 커버리지는 "`STATIONS`에 등록된 역 = 지원"이다. 명세의 "역 단위 커버리지 목록"이 아니라, 4번의 키워드 블랙리스트에 없는 미등록 역은 `NOT_FOUND`가 된다.
+- 커버리지는 "`STATIONS`에 등록된 역 = 지원"이다. 1~8호선 역이라도 Mock 데이터에 없으면 `NOT_FOUND`가 된다 (예: 부평).
 
-### 3.2 `get_elevator_status(station_id)`
+### 2.2 `get_elevator_status(station_id)`
 
-- `ELEVATORS`에 데이터가 있는 역은 9곳뿐이다: `gangnam`, `cityhall`, `yeoksam`, `euljiro1ga`, `sadang`, `sillim`, `sindorim`, `jamsil`, `hongik`. 나머지 역(또는 존재하지 않는 ID)은 오류 없이 `overall_status="UNKNOWN"`, `segments=[]`를 반환한다.
-- `overall_status`는 **고장 구간 개수**로만 정한다: 고장 0개 → `AVAILABLE`, 전부 고장 → `UNAVAILABLE`, 그 외 → `PARTIAL`. `MAINTENANCE`도 고장으로 센다. 구간 종류(`exit`/`platform`/`transfer`)나 이동 방향은 고려하지 않는다.
-- `updated_at`은 "현재 시각 − 5분", `freshness_minutes`는 항상 5인 **가짜 값**이다.
-- 현재 Mock 상 고장이 있는 역: 사당(승강장), 신림(6번 출구), 신도림(3번 출구) — 셋 다 `PARTIAL`. `UNAVAILABLE` 역은 없다.
+- `overall_status`는 고장 구간 **개수**로 정한다: 0개 → `AVAILABLE`, 전부 → `UNAVAILABLE`, 그 외 → `PARTIAL`. `MAINTENANCE`도 고장으로 센다.
+- 엘리베이터 데이터가 있는 역은 9곳(`ELEVATORS`). 나머지 역과 모르는 ID는 오류 없이 `UNKNOWN`.
+- `updated_at`은 "현재 − 5분", `freshness_minutes`는 5로 고정된 Mock 값이다.
+- 현재 Mock 상 고장 역: 사당(2호선 승강장), 신림(6번 출구), 신도림(3번 출구) — 모두 `PARTIAL`.
 
-### 3.3 `get_broken_elevators(line_id=None)`
+### 2.3 `get_broken_elevators(line_id=None)`
 
-- `ELEVATORS`를 돌며 고장 구간이 하나라도 있는 역을 모은다. `line_id`가 있으면 `STATIONS[역]["lines"]`에 포함된 역만 남긴다.
-- 정렬: `UNAVAILABLE` 먼저, 그다음 고장 구간 수 내림차순.
-- `details`는 고장 구간의 원본 dict 목록이다 (`ElevatorSegment` 모델이 아님).
+- 고장 구간이 있는 역만 모은다. `line_id`가 있으면 그 노선이 지나는 역만.
+- 정렬: `UNAVAILABLE` 먼저, 그다음 고장 구간 수 내림차순. `details`는 고장 구간 원본 dict 목록.
 
-### 3.4 `plan_trip(start_id, end_id, arrive_by=None, depart_at=None, home_walk_min=7)`
+### 2.4 `plan_trip(start_id, end_id, arrive_by=None, depart_at=None, home_walk_min=7, *, now=None)`
+
+**입력 검증**: 모르는 역 ID, `HH:MM`이 아닌 시각은 `ValueError`. `now`는 LLM에 노출되지 않는 인자로, 테스트나 요청의 `current_time`을 넣을 때 쓴다.
 
 **경로**
 
-- 두 역이 모두 `LINE_2_LOOP`에 있으면 시계(외선)·반시계(내선) 중 정거장이 적은 쪽을 고른다. 같으면 시계 방향.
-- 하나라도 순환선 밖이면(예: `seoul`, `jongno3ga`, `express_bus`) 경로를 `[start, end]`, **1정거장**으로 처리한다.
-- `legs`는 항상 2호선 한 구간, `transfers`는 항상 0이다. 환승 경로는 계산하지 않는다.
+- 두 역이 모두 2호선 순환선(`LINE_2_LOOP`, 43역)에 있으면 외선·내선 중 짧은 쪽. 같으면 외선(시계 방향).
+- 하나라도 순환선 밖(서울역, 종로3가, 고속터미널)이면 `is_possible=False`, 경로 `[start, end]`, 정거장 0, `warnings[0]`에 사유. 이때 시간 값은 의미가 없다.
+- 환승은 계산하지 않는다 (`transfers=0`, leg 1개).
 
-**시간 계산 (단위: 분)**
+**시간 (단위: 분)**
 
 ```text
-총 소요 = home_walk + station_entry_elevator + worst_case_wait + subway_ride + exit_elevator
-        =    7      +           3            + (3 + 2)         + 정거장×2    +      3
+총 소요 = 도보(home_walk_min, 기본 7) + 역 진입·엘리베이터(3) + 최악 대기(배차 3 + 여유 2 = 5)
+        + 정거장 수 × 2 + 출구 엘리베이터(3)
+예) 신도림→강남 12개 역: 7 + 3 + 5 + 24 + 3 = 42분
 ```
-
-- `worst_case_wait` = 2호선 배차 간격(3) + 안전 여유(2) = **5분**. 평균 대기(배차/2)가 아니라 보수적으로 잡는다.
-- `transfer_walk`는 항상 0. 다른 노선 배차(`default_headway=5`)는 아직 쓰이지 않는다.
-- `home_walk_min=None`이면 `TIMING_PARAMS["home_walk"]`(7)을 쓴다.
-
-**모드별 결과**
 
 | 모드 | 조건 | 계산 |
 |---|---|---|
-| 역산 | `arrive_by` 있음 | 도착 = 오늘 `arrive_by` (이미 지났으면 **내일**로 넘김). 출발 = 도착 − 총 소요. 승차 = 출발 + (도보 + 진입 + 대기). `minutes_from_now` = 출발 − 현재, 음수면 `is_late=True` |
-| 순방향 | `arrive_by` 없음 | 출발 = 오늘 `depart_at` 또는 현재. 도착 = 출발 + 총 소요. `minutes_from_now=0`, `is_late=False` 고정 |
+| 역산 | `arrive_by` 있음 | 도착 = 오늘 `arrive_by` (이미 지났으면 **내일**). 출발 = 도착 − 총 소요. `is_late` = 출발 시각이 이미 지남 |
+| 순방향 | `arrive_by` 없음 | 출발 = 오늘 `depart_at` 또는 현재. 도착 = 출발 + 총 소요. `is_late`는 항상 False |
 
-- `arrive_by` 형식이 잘못되면(예: `"25:00"`) 오류 없이 **조용히 순방향 모드로 넘어간다**.
-- `depart_at` 형식이 잘못되면 `ValueError`가 그대로 발생한다.
-- `is_possible`은 항상 `True`. 첫차/막차 시간은 반영하지 않는다.
+`board_time` = 출발 + (도보 + 진입 + 대기). `minutes_from_now` = 출발 − 현재.
 
 **엘리베이터 우회**
 
-- **도착역**이 `PARTIAL`/`UNAVAILABLE`이면 `_find_alternative`로 대체역 1곳을 찾아 `detours`와 `warnings`에 넣는다.
-  1. `ALTERNATIVE_TIPS`에 `"{도착역}>{대체역}"` 키가 있으면 그 팁 사용 (거리 800m / 도보 10분 고정값).
-  2. 없으면 2호선 순환선의 다음 역(시계 방향)을 대체역으로 사용 (950m / 12분 고정값).
-- **출발역**이 고장이면 `warnings`에 문구만 추가하고 대체역은 찾지 않는다.
-- 환승역은 검사하지 않는다. 따라서 `target_type`은 항상 `"end"`이다.
-- 대체역을 찾아도 경로·시간은 다시 계산하지 않는다 (대체역까지의 도보 시간 미반영).
+- 출발역과 도착역(같은 역이면 한 번)의 상태가 `PARTIAL`/`UNAVAILABLE`이면 `find_alternative`로 대체역을 찾아 `detours`(`target_type` = `start`/`end`)와 `warnings`에 넣는다.
+  1. `ALTERNATIVES`에 등록된 안내가 있으면 사용 (거리·도보 시간 포함, 없으면 기본 800m / 10분).
+  2. 없으면 순환선 양옆 역 중 고장이 확인되지 않은 역 (기본 800m / 10분).
+  3. 대체역 자체가 고장으로 확인되면 추천하지 않는다.
+- 환승역은 검사하지 않는다. 대체역을 찾아도 경로·시간은 다시 계산하지 않는다.
+- **고장 역의 대체역만 알고 싶으면 `start_id == end_id`로 호출한다** (폴백 엔진과 LLM 도구 설명 모두 이 방식).
 
 ---
 
-## 4. 폴백 엔진 (`FallbackEngine.process`) 동작
+## 3. 폴백 엔진 (`FallbackEngine.process`)
 
-### 4.1 처리 순서
+### 3.1 처리 순서
 
-1. `extract_stations`: 메시지를 `[가-힣0-9a-zA-Z_]+` 토큰으로 나눠 토큰마다 `resolve_station`을 호출하고, `SUPPORTED`인 역만 순서대로(중복 제거) 모은다.
-2. `parse_korean_time`: 시각 표현을 `HH:MM`으로 변환.
-3. `classify_intent`: 아래 점수표로 의도 결정.
-4. 문맥 보정: 역이 하나도 없고 "거기/그 역/여기…" 같은 지칭어가 있으면 `session_ctx["last_station_id"]`를 역으로 사용. **의도 분류는 이 보정 전에 끝난다.**
-5. 의도별 핸들러가 도구를 호출하고 `ChatResponse`(`engine="fallback"`, `fallback_used=True`)를 조립.
+1. `extract_mentions`: 문장에서 역을 찾는다.
+   - 역명·별칭 사전을 **긴 표기부터** 문자열 매칭 (서울대입구 > 서울). 등장 순서대로, 중복 제거.
+   - `서울`, `이대`는 뒤에 `역`이 붙어야 인정 (일반 단어와 겹침).
+   - 매칭 뒤에 다른 글자가 이어지고 `역`으로 끝나면 더 긴 다른 역으로 보고 버린다 (강남구청역 ≠ 강남).
+   - 미지원 키워드(`unsupported`)와, 사전에 없는 `○○역` 표기(`unknown`)도 따로 모은다.
+2. `parse_korean_time`으로 시각 추출 (§3.3).
+3. `classify_intent`로 의도 결정 (§3.2).
+4. 미지원 키워드가 있으면 즉시 `out_of_coverage` 응답. **다른 역으로 대신 답하지 않는다.**
+5. 역이 없고 "거기/그 역/여기…" 같은 지칭어가 있으면 `session_ctx["last_station_id"]` 사용.
+6. 의도별 응답 (§3.4). 필요한 역이 없으면 추측하지 않고 `need_station`으로 되묻는다.
 
-`session_ctx`는 읽기만 한다. 응답 후 세션 갱신은 호출하는 쪽(향후 오케스트레이터) 책임이다.
+`session_ctx`는 읽기만 한다. 응답 후 세션 갱신은 호출하는 쪽(오케스트레이터) 책임이다. `current_time`("HH:MM")을 주면 그 시각 기준으로 계산한다.
 
-### 4.2 의도 분류 점수표
+### 3.2 의도 분류 점수표
 
 | 조건 | 가점 |
 |---|---|
@@ -132,77 +120,83 @@
 | 시각 있음 + (`까지`/`도착`/`가려면`/`에 가`) | departure +3 |
 | 대체/고장 표현 (`고장`, `안 돼`, `우회`, `다른 역`, `어디로` 등) | alternative +3 |
 | `대체역` 또는 `우회` 포함 | alternative +3 (추가) |
-| 고장 목록 표현 (`고장 난 역`, `현황`, `목록` 등) | 역 언급이 없을 때만 outages +6 |
+| 고장 목록 표현 (`고장 난 역`, `현황`, `목록` 등), 역 언급 없을 때만 | outages +6 |
 | 경로 표현 (`가는 길`, `경로`, `환승`, `가려면` 등) | route +3 |
 | 역 2개 이상 | route +1 |
 | 시각 있음 | route −2 |
 | 엘리베이터 표현 (`엘베`, `휠체어`, `상태`, `탈 수` 등) | elevator +2 |
-| 인사 표현 | 역 언급이 없을 때만 greeting +2 |
+| 인사 표현, 역 언급 없을 때만 | greeting +2 |
 | outages 점수 > 0 | alternative −2 |
 
-최고점이 0 이하이면 `elevator`로 처리한다.
+최고점이 0 이하이면 `elevator`.
 
-### 4.3 시각 파싱 규칙
+### 3.3 시각 파싱
 
-- `14:45`처럼 `HH:MM`이 있으면 그대로 사용.
-- `정오` → 12:00, `자정` → 00:00.
-- `N시`, `N시 M분`, `N시 반` (N은 숫자 또는 `한`~`열두`).
-- `오후/저녁/밤` → 12 미만이면 +12. `오전/아침/새벽` + 12시 → 0시.
-- **오전/오후 표시가 없고 1~6시면 오후로 간주** (예: "3시 반" → 15:30). 7시 이상은 그대로 (예: "7시" → 07:00).
+- `HH:MM` 그대로 (범위 밖이면 None), `정오` 12:00, `자정` 00:00.
+- `N시`, `N시 M분`, `N시 반` (N은 숫자 또는 한~열두). `3시간`, `네 시청역`처럼 뒤에 `간`/`청`이 오면 시각이 아니다.
+- `오후/저녁/밤` → +12, `오전/아침/새벽` 12시 → 0시.
+- **표시 없이 1~6시면 오후** (3시 반 → 15:30), 7시 이상은 그대로 (7시 → 07:00).
 
-### 4.4 의도별 응답
+### 3.4 응답 종류 (`card_type`)
 
-| 의도 | 호출 도구 | card_type | 액션 |
+| card_type | 언제 | 호출 도구 | 액션 |
 |---|---|---|---|
-| greeting (역 없음) | 없음 | `help` | 없음 |
-| outages | `get_broken_elevators()` (노선 필터 없음) | `outages_list` / `outages_empty` | 1순위 역 `openStation` |
-| departure / route | `plan_trip` | `trip_plan` | `openTime` (`originId`, `destId`, `arriveBy`) |
-| elevator / alternative | `get_elevator_status`, 고장이면 `plan_trip(sid, sid)`로 대체역 조회 | `elevator_status` | `openStation`, 대체역 있으면 `showAlternative`를 맨 앞에 추가 |
+| `help` | 인사, 역 없음 | — | — |
+| `outages_list` / `outages_empty` | 고장 목록 의도 | `get_broken_elevators` | 상위 3역 `openStation` |
+| `out_of_coverage` | 미지원 지역/노선 언급 | (`resolve_station` 기록만) | — |
+| `need_station` | 필요한 역을 알 수 없음, 사전에 없는 역, 출발=도착 | — | — |
+| `trip_plan` | departure/route | `resolve_station`, `plan_trip` | `openTime`, 대체역마다 `showAlternative` |
+| `trip_unsupported` | `plan_trip`이 `is_possible=False` | 〃 | — |
+| `elevator_status` | elevator/alternative | `resolve_station`, `get_elevator_status`, 고장이면 `plan_trip(sid, sid)` | 대체역 있으면 `showAlternative`, `openStation` |
 
-- departure/route의 출발·도착역: 역 2개 → 첫 번째가 출발, 두 번째가 도착. 역 1개 → 도착역, 출발은 `last_station_id` 또는 기본값 `sindorim`. 역 0개 → 신도림→신도림.
-- elevator/alternative에서 역이 없으면 **강남역**을 기본 대상으로 한다.
-- `metadata.latency_ms`는 항상 0이다.
+- departure/route의 출발·도착: 역 2개 → 앞이 출발. 역 1개 → 도착역, 출발은 `last_station_id` 또는 신도림(이 경우 "출발역이 지정되지 않아 신도림역 기준으로 안내합니다" 문구 포함).
+- `tool_calls`에는 실제로 호출한 도구와 인자를 그대로 기록한다.
+- `metadata.latency_ms`는 0 (측정은 오케스트레이터 몫).
 
 ---
 
-## 5. 명세와 현재 구현의 차이
+## 4. 명세와 현재 구현의 차이
 
 | 항목 | 명세 / 설계 검토 | 현재 구현 |
 |---|---|---|
-| LLM 공급자 | OpenRouter / Gemini (명세 §9) | 학교 FactChat 게이트웨이 + NVIDIA 게이트웨이 실험 |
-| LLM 타임아웃 | 2.5초 (명세 §1, §6.2, CARD-004) | `config.py` 기본값 3.0초 — **팀 확정 필요** |
-| `worst_case_wait` | 예시: 배차 3 + 안전 여유 1 = 4분 (명세 §3.4) | 배차 3 + 안전 여유 2 = 5분 |
-| 커버리지 판정 | 역 단위 목록으로 관리 (설계 검토 §2.2) | `STATIONS` 등록 여부 + 키워드 블랙리스트 |
+| LLM 타임아웃 | 2.5초 (명세 §1, §6.2) | `config.py` 기본값 3.0초 — **팀 확정 필요** |
+| 커버리지 판정 | 역 단위 목록 (설계 검토 §2.2) | `STATIONS` 등록 여부 + 키워드 블랙리스트 |
 | 엘리베이터 이용 가능 판정 | 이동 방향에 필요한 구간 기준 (설계 검토 §2.3) | 고장 구간 개수 기준 |
-| 고장 우회 | 출발/환승/도착 모두, 그래프에서 고장 노드 제외 (설계 검토 §2.3) | 도착역만, 고정 팁 또는 다음 역 |
+| 고장 우회 | 출발·환승·도착, 그래프에서 고장 노드 제외 | 출발·도착만, 등록된 안내 또는 인접 역 |
 | 경로 탐색 | 다익스트라, 환승 포함 | 2호선 순환선 방향 비교만 |
 | 오전/오후 모호성 | 현재 시각 이후 가장 가까운 시각 (설계 검토 §2.1) | 1~6시는 오후 고정, 지난 시각은 다음 날 |
-| 첫차/막차 | 범위 밖이면 예외 응답 (설계 검토 §2.4) | 미반영, `is_possible` 항상 True |
+| 첫차/막차 | 범위 밖이면 예외 응답 (설계 검토 §2.4) | 미반영 |
 | 데이터 신선도 | 실제 갱신 시각 | 현재 − 5분 고정값 |
-| `schoolApi.py`의 도구 정의 | 4종, `plan_trip`은 `depart_at`·`home_walk_min` 포함 | 3종 (`get_broken_elevators` 없음), `plan_trip`은 `start_id`/`end_id`/`arrive_by`만 |
-| `.env` 사용 | `.env.example` → `.env` 복사 | `.env`를 읽는 코드 없음 (셸 환경 변수만 읽음) |
 
 ---
 
-## 6. 알려진 이슈
+## 5. 남은 제약 (Mock 단계라 의도적으로 둔 것)
 
-코드 수정이 필요한 항목이다. 우선순위는 사용자에게 잘못된 안내가 나가는지를 기준으로 매겼다.
-
-| # | 우선순위 | 이슈 | 재현 | 원인 |
-|---|---|---|---|---|
-| 1 | 높음 | 대체역 이름이 한글 대신 ID로 노출 ("대체역(mullae역)") | `plan_trip("gangnam", "sindorim")` — 사당·신도림·신림 3곳 모두 해당 | 대체역 `bangbae`, `mullae`, `sindaebang`이 `STATIONS`에 없어 이름 조회가 ID로 대체됨 |
-| 2 | 높음 | 폴백에서 미지원 역을 물으면 강남역 정보로 답함 | `FallbackEngine.process("판교역 엘리베이터")` → "강남역의 모든 엘리베이터는 정상…" | `extract_stations`가 `OUT_OF_COVERAGE`를 버리고, 역이 없으면 강남을 기본값으로 씀 |
-| 3 | 중간 | 부분 일치가 너무 느슨함 | `"서울"` → 서울대입구, `"신"` → 신당, `"강"` → 강남 | `resolve_station` 5단계가 `STATIONS` 순서상 첫 부분 일치를 반환 |
-| 4 | 중간 | `depart_at` 형식 오류 시 예외, `arrive_by` 형식 오류는 조용히 무시 | `plan_trip(..., depart_at="abc")` → `ValueError` | 두 모드의 입력 검증 방식이 다름 |
-| 5 | 낮음 | 폴백 `tool_calls` 기록이 실제 호출과 다름 | departure 응답의 `resolve_station` args가 `{"query": "jamsil"}` (역 ID) | 기록용 `ToolCallRecord`를 별도로 만들면서 ID를 넣음 |
-| 6 | 낮음 | `서울역`만 표준 역명에 "역"이 붙어 있어 문장에 "서울역역"이 나옴 | 서울역 관련 폴백 응답 | `STATIONS["seoul"]["name"] = "서울역"` |
-| 7 | 낮음 | `nvidiaApi.py`를 import하면 즉시 API 호출 | `import AI.src.nvidiaApi` | 호출 코드가 `if __name__ == "__main__":` 밖에 있음 |
-| 8 | 낮음 | 모델 기본값 불일치 | `schoolApi.py`는 `gpt-5.1`, `config.py`·`.env.example`은 `claude-sonnet-5` | `schoolApi.py`가 `config.py`를 쓰지 않고 자체 기본값을 가짐 |
+- 경로는 2호선 순환선만. 순환선 밖 역은 `is_possible=False`로 정직하게 거절한다.
+- 대체역 거리 정보가 없는 곳(방배, 신대방, 인접 역 자동 선택)은 기본값 800m / 10분.
+- 폴백의 역 추출은 띄어쓰기가 없는 문장("신도림에서강남역")에서 앞 역을 놓칠 수 있다. LLM 경로는 `resolve_station`이 역 이름만 받으므로 영향 없음.
 
 ---
 
-## 7. 개발 환경 메모
+## 6. 변경 이력
 
-- 테스트와 스크립트는 `AI/`의 **부모 폴더**에서 실행한다 (`python -m pytest AI/tests`). 모든 import가 `AI.src.*` 절대 경로이기 때문이다. `schoolApi.py`는 스스로 부모 폴더를 `sys.path`에 추가하므로 어디서 실행해도 된다.
-- Windows 콘솔(cp949)에서 이모지를 출력하는 스크립트는 `PYTHONIOENCODING=utf-8` 또는 `python -X utf8`로 실행한다.
-- 이 레포의 `README.md`는 UTF-8로 저장한다 (이전에는 UTF-16이라 git이 바이너리로 취급해 diff가 보이지 않았다).
+### 2026-11-12 — 버그 수정 및 구조 정리
+
+| 문제 | 조치 |
+|---|---|
+| 대체역 이름이 ID로 노출 ("대체역(mullae역)") | 2호선 순환선 43역을 모두 `STATIONS`에 등록, 데이터 무결성 테스트 추가 |
+| 폴백에서 미지원 역(판교)을 물으면 강남역으로 답함 | `out_of_coverage` 응답 추가, 역이 없으면 기본값 대신 `need_station`으로 되물음 |
+| 역명 부분 일치가 느슨함 ("서울"→서울대입구, "강"→강남) | 정확 일치 우선, 접두어 일치는 후보가 하나일 때만. `서울` 표준명 정리 |
+| "서울역역" 문구 | 표준 역명에서 '역' 제거 |
+| `arrive_by` 형식 오류는 무시, `depart_at`은 예외 | 둘 다 `ValueError`, 모델 단계에서 `HH:MM` 패턴 검증 |
+| 순환선 밖 역을 "1정거장"으로 계산 | `is_possible=False` + 사유 경고 |
+| 출발역 고장 시 대체역 없음 | 출발역도 대체역 탐색 (`target_type="start"`) |
+| 폴백 `tool_calls` 기록이 실제 호출과 다름 | 실제 인자 그대로 기록 |
+| 폴백이 `current_time`을 무시 | 기준 시각으로 사용 |
+| "3시간", "네 시청역"을 시각으로 인식, "25:00" 통과 | 시각 정규식·범위 검증 보강 |
+| 도구 스키마가 스크립트마다 손으로 중복 작성 (일부 누락) | `tool_registry.py`에서 모델로부터 자동 생성 |
+| `nvidiaApi.py`는 import만 해도 API 호출, 스크립트 2개 중복 | `scripts/llm_demo.py`(`--provider factchat` / `nvidia`)로 통합, 기존 파일 삭제 |
+| `.env`를 읽지 않음, 모델 기본값 불일치 | `config.py`가 `AI/.env` 자동 로딩, 기본 모델 `gpt-5.1`로 통일 |
+| Windows 콘솔 이모지 출력 오류 | 데모 스크립트가 stdout을 UTF-8로 설정 |
+| 테스트를 `AI/` 안에서 돌리면 import 실패 | `conftest.py`, `pytest.ini` 추가 |
+| 설계 검토 문서가 레포 루트에 한글 파일명으로 있음 | `docs/DESIGN_REVIEW.md`로 이동 |

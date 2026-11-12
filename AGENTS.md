@@ -1,0 +1,87 @@
+# AGENTS.md — AI 에이전트 작업 가이드
+
+이 레포에서 작업하는 AI 코딩 에이전트(Claude, Gemini, Codex 등)가 **가장 먼저** 읽는 문서다.
+사람용 소개는 [README.md](README.md)에 있다.
+
+## 1. 이 레포는 무엇인가
+
+우왕톤 7팀 "엘리베이터 지하철" 서비스의 **AI 파트**. 휠체어·유모차 이용자에게 지하철 엘리베이터 상태, 고장 시 대체역, 늦지 않는 출발 시각을 챗봇으로 안내한다.
+LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도구가 한다. LLM이 실패하면 규칙 기반 폴백 엔진이 같은 형식으로 답한다.
+
+현재 단계: Phase 1 완료(도구·폴백·테스트), Phase 2 진행 중(LLM 연동 데모까지. FastAPI 오케스트레이터는 아직 없음).
+상세 현황: [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md)
+
+## 2. 읽는 순서
+
+1. 이 문서
+2. [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) — 지금 코드가 실제로 어떻게 동작하는가
+3. [docs/AI_DEVELOPMENT_SPEC.md](docs/AI_DEVELOPMENT_SPEC.md) — 목표 설계와 FE/BE와의 계약(도구 스키마, `/api/chat`)
+4. [docs/DESIGN_REVIEW.md](docs/DESIGN_REVIEW.md) — 왜 이렇게 설계했는가 (기록용)
+
+명세와 코드가 다르면 **코드와 IMPLEMENTATION_STATUS가 현재 사실**이고, 명세는 목표다. 차이를 발견하면 IMPLEMENTATION_STATUS §4에 적는다.
+
+## 3. 반드시 지킬 원칙
+
+이 서비스에서 틀린 정보는 휠체어 이용자가 열차를 놓치거나 고장 난 역에 갇히는 결과로 이어진다.
+
+1. **LLM은 해석만, 계산은 도구가.** 경로·시간·엘리베이터 상태를 LLM 출력이나 프롬프트로 만들지 않는다. 새 계산이 필요하면 `src/tools.py`에 도구 로직으로 넣는다.
+2. **액션 데이터(`actions`, 카드)는 백엔드 코드가 도구 결과로 직접 조립한다.** LLM이 JSON을 쓰게 하지 않는다.
+3. **모르면 모른다고 한다.** 역을 못 찾거나 지원 범위 밖이면 기본 역으로 대신 답하지 말고 되묻거나 거절한다. 계산할 수 없는 구간은 `is_possible=False`로 돌려준다.
+4. **시간은 보수적으로.** 대기 시간은 평균(배차/2)이 아니라 배차 간격 + 안전 여유로 잡는다.
+5. **도구 입출력 스키마는 FE/BE와의 계약이다.** `src/models.py`를 바꾸면 명세서 §3·§4도 같이 고친다.
+
+## 4. 명령어
+
+모든 명령은 `AI/` 안에서 실행해도 되고, 부모 폴더에서 `AI/...` 경로로 실행해도 된다.
+
+```powershell
+pip install -r requirements.txt          # pydantic, openai, pytest
+python -m pytest                         # 전체 테스트 (68건). 작업 전후로 반드시 실행
+python scripts/llm_demo.py "사당역 엘리베이터 돼?"              # FactChat 게이트웨이 왕복 데모 (API 키 필요)
+python scripts/llm_demo.py --provider nvidia "지금 고장난 역 알려줘"
+```
+
+API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 자동으로 읽는다. **키를 코드나 문서에 쓰지 않는다.**
+
+## 5. 코드 지도 — 무엇을 바꾸려면 어디를 보는가
+
+| 바꾸려는 것 | 파일 | 같이 고칠 것 |
+|---|---|---|
+| 도구 입출력 필드 | `src/models.py` | 명세 §3, `tests/test_tool_registry.py` |
+| 도구 계산 로직 | `src/tools.py` | `tests/test_tools.py`, IMPLEMENTATION_STATUS §2 |
+| 역·별칭·엘리베이터·대체역·시간 상수 | `src/mock_data.py` | `tests/test_mock_data.py`가 참조 무결성 검사 |
+| LLM에 보이는 도구 설명 | `src/tool_registry.py` (`_TOOLS`) | 파라미터 스키마는 `models.py`에서 자동 생성되므로 손으로 쓰지 않는다 |
+| 시스템 프롬프트 | `src/prompts.py` | 명세 §5.1 (같은 문구 유지) |
+| 폴백 의도 분류·문장 | `src/fallback_engine.py` | `tests/test_fallback.py`, IMPLEMENTATION_STATUS §3 |
+| 게이트웨이·타임아웃 설정 | `src/config.py`, `.env.example` | — |
+| 실험용 실행 스크립트 | `scripts/` | — |
+
+다음에 만들 것(Phase 2): FastAPI `/api/chat` 오케스트레이터. `tool_registry.TOOL_SPECS`/`execute_tool`, `prompts.build_system_prompt`, `config.settings.LLM_TIMEOUT_SECONDS`, `FallbackEngine.process`를 조합하면 된다. 흐름은 명세 §2 시퀀스 다이어그램을 따른다.
+
+## 6. 작업 규칙
+
+- **동작을 바꾸면 테스트를 추가하고, IMPLEMENTATION_STATUS의 해당 절을 고친다.** 문서에 없는 동작을 만들지 않는다.
+- 실행해서 확인하지 않은 것을 문서나 커밋 메시지에 "완료", "100% 준수"처럼 쓰지 않는다. 숫자(테스트 수, 소요 시간)는 실제로 돌려 본 값만 쓴다.
+- Mock 데이터 규칙: 어디서든 참조하는 역 ID는 `STATIONS`에 등록한다. 역명(`name`)에는 `역`을 붙이지 않는다(문장에서 `f"{name}역"`).
+- `src/` 모듈은 import할 때 네트워크 호출·출력 같은 부작용이 없어야 한다. 실행 스크립트는 `scripts/`에 두고 `if __name__ == "__main__":`으로 감싼다.
+- import는 `AI.src.*` 절대 경로(테스트·스크립트) 또는 패키지 내부 상대 경로(`from .tools import ...`)를 쓴다. 레포 폴더 이름은 반드시 `AI`여야 한다.
+- 파일명: Python 모듈은 `snake_case.py`. `scripts/`에 `test_*.py`나 `*_test.py` 이름을 쓰지 않는다(pytest가 수집함).
+- 인코딩: 모든 텍스트 파일은 **UTF-8**. UTF-16으로 저장하면 git이 바이너리로 취급한다.
+- 문서·주석·안내 문장은 한국어. 새 문서는 `docs/`에 만들고 레포 루트에 흩어 놓지 않는다.
+- 커밋 메시지는 `feat:`, `fix:`, `docs:`, `refactor:`, `test:` 접두어. PR은 `.github/pull_request_template.md` 양식.
+
+## 7. 아직 결정되지 않은 것 (임의로 정하지 말고 사용자에게 묻는다)
+
+- LLM 타임아웃: 명세 2.5초 vs `config.py` 3.0초
+- 사용할 LLM 모델: 현재 기본값 FactChat `gpt-5.1` (NVIDIA `z-ai/glm-5.3-flash`와 비교 중)
+- 대체역 우선순위: 거리 vs 같은 노선 (설계 검토 §4)
+- 엘리베이터 실데이터 출처와 갱신 주기, 경로 계산을 AI/BE 중 어디서 구현할지
+
+## 8. 레포 밖 관련 문서
+
+이 레포(`AI/`)는 상위 프로젝트 폴더 안에 있으며, 형제 레포 `FE/`, `BE/`와 공용 `docs/`가 있다.
+
+- `../docs/cards/004-ai-development-plan.md` — AI 파트 작업 카드
+- `../docs/decisions/001-ai-architecture-and-tool-design.md` — 아키텍처 결정 기록
+- `../docs/PROJECT-STATE.md` — 프로젝트 전체 진행 상황
+- `../FE/Prototype-v2/js/ai-agent.js` — 폴백 엔진의 원본 프로토타입 로직

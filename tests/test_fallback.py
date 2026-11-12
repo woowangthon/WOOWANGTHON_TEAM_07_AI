@@ -1,50 +1,117 @@
-"""Fallback Engine 단위 테스트.
-
-테스트 대상: FallbackEngine (한국어 시간 파싱, 인텐트 분류, 도구 연동 응답 생성)
-"""
+"""FallbackEngine 단위 테스트 (시각 파싱, 역 추출, 의도별 응답)."""
 
 import pytest
-from AI.src.fallback_engine import FallbackEngine
+
+from AI.src.fallback_engine import FallbackEngine as F
 
 
-def test_fallback_time_parsing():
-    # 1. 자연어 시각 변환
-    assert FallbackEngine.parse_korean_time("3시 반") == "15:30"
-    assert FallbackEngine.parse_korean_time("오후 4시 20분") == "16:20"
-    assert FallbackEngine.parse_korean_time("14:45") == "14:45"
-    assert FallbackEngine.parse_korean_time("오전 9시") == "09:00"
-    assert FallbackEngine.parse_korean_time("정오") == "12:00"
+@pytest.mark.parametrize("text, expected", [
+    ("3시 반", "15:30"),
+    ("오후 4시 20분", "16:20"),
+    ("14:45", "14:45"),
+    ("오전 9시", "09:00"),
+    ("정오", "12:00"),
+    ("열한시", "11:00"),
+    ("세 시", "15:00"),
+    ("7시", "07:00"),
+])
+def test_parse_korean_time(text, expected):
+    assert F.parse_korean_time(text) == expected
 
 
-def test_fallback_process_elevator():
-    # "강남역 엘리베이터 돼?" 질의
-    resp = FallbackEngine.process("강남역 엘리베이터 지금 돼?")
-    assert resp.metadata.engine == "fallback"
-    assert resp.metadata.fallback_used is True
-    assert "강남" in resp.text
-    assert "정상" in resp.text
-    assert len(resp.actions) > 0
-    assert any(tc.name == "get_elevator_status" for tc in resp.tool_calls)
+@pytest.mark.parametrize("text", ["25:00", "3시간 걸려?", "네 시청역 엘리베이터", "엘리베이터 돼?"])
+def test_parse_korean_time_rejects_non_times(text):
+    assert F.parse_korean_time(text) is None
 
 
-def test_fallback_process_alternative():
-    # 고장난 역 대체역 질의
-    resp = FallbackEngine.process("사당역 엘리베이터 고장났다는데 어디로 가야 해?")
-    assert "대체역" in resp.text
-    assert any(a.type == "showAlternative" for a in resp.actions)
+def test_extract_mentions_keeps_order_and_prefers_longest_name():
+    m = F.extract_mentions("서울대입구에서 신도림까지")
+    assert [s["id"] for s in m["stations"]] == ["seoul_univ", "sindorim"]
 
 
-def test_fallback_process_departure_reverse():
-    # 출발 시각 역산 질의
-    resp = FallbackEngine.process("신도림에서 강남까지 3시 반까지 가려면 언제 출발해?")
-    assert "출발" in resp.text
+def test_extract_mentions_seoul_requires_station_suffix():
+    assert F.extract_mentions("서울 지하철 엘리베이터")["stations"] == []
+    assert [s["id"] for s in F.extract_mentions("서울역 엘리베이터")["stations"]] == ["seoul"]
+
+
+def test_extract_mentions_does_not_match_prefix_of_longer_station():
+    m = F.extract_mentions("강남구청역 엘리베이터")
+    assert m["stations"] == []
+    assert m["unknown"] == ["강남구청"]
+
+
+def test_extract_mentions_unsupported_and_unknown():
+    assert F.extract_mentions("판교역 엘리베이터")["unsupported"] == ["판교"]
+    assert F.extract_mentions("부평역 엘리베이터 돼?")["unknown"] == ["부평"]
+
+
+def test_process_elevator_available():
+    resp = F.process("강남역 엘리베이터 지금 돼?")
+    assert resp.metadata.engine == "fallback" and resp.metadata.fallback_used is True
+    assert resp.card_type == "elevator_status"
+    assert "강남" in resp.text and "정상" in resp.text
+    assert [tc.name for tc in resp.tool_calls] == ["resolve_station", "get_elevator_status"]
+    assert resp.tool_calls[0].args == {"query": "강남"}
+
+
+def test_process_alternative_shows_korean_name():
+    resp = F.process("사당역 엘리베이터 고장났다는데 어디로 가야 해?")
+    assert "방배역" in resp.text
+    assert "bangbae" not in resp.text
+    assert resp.actions[0].type == "showAlternative"
     assert any(tc.name == "plan_trip" for tc in resp.tool_calls)
+
+
+def test_process_departure_reverse():
+    resp = F.process("신도림에서 강남까지 3시 반까지 가려면 언제 출발해?", current_time="12:00")
+    assert resp.card_type == "trip_plan"
+    assert "**14:48**" in resp.text   # 15:30 − 42분
+    plan_call = next(tc for tc in resp.tool_calls if tc.name == "plan_trip")
+    assert plan_call.args == {"start_id": "sindorim", "end_id": "gangnam", "arrive_by": "15:30"}
     assert any(a.type == "openTime" for a in resp.actions)
 
 
-def test_fallback_process_outages():
-    # 고장 목록 질의
-    resp = FallbackEngine.process("지금 고장난 역 알려줘")
-    assert any(tc.name == "get_broken_elevators" for tc in resp.tool_calls)
-    assert "총" in resp.text or "정상" in resp.text
+def test_process_departure_default_origin_is_announced():
+    resp = F.process("잠실까지 3시까지 가려면?", current_time="12:00")
+    assert "신도림역 기준으로 안내합니다" in resp.text
+    assert [tc.args for tc in resp.tool_calls if tc.name == "resolve_station"] == [{"query": "잠실"}]
 
+
+def test_process_departure_uses_session_origin():
+    resp = F.process("잠실까지 3시까지 가려면?", current_time="12:00", session_ctx={"last_station_id": "gangnam"})
+    assert resp.text.startswith("강남역에서 잠실역까지")
+
+
+def test_process_trip_outside_line2_is_reported_not_guessed():
+    resp = F.process("서울역에서 강남까지 가는 길 알려줘")
+    assert resp.card_type == "trip_unsupported"
+    assert "지원하지 않습니다" in resp.text
+
+
+def test_process_outages():
+    resp = F.process("지금 고장난 역 알려줘")
+    assert resp.card_type == "outages_list"
+    assert [tc.name for tc in resp.tool_calls] == ["get_broken_elevators"]
+    assert "총 3곳" in resp.text
+
+
+def test_process_out_of_coverage_does_not_answer_with_other_station():
+    resp = F.process("판교역 엘리베이터 상태는?")
+    assert resp.card_type == "out_of_coverage"
+    assert "강남" not in resp.text
+
+
+@pytest.mark.parametrize("text", ["엘리베이터 돼?", "부평역 엘리베이터 돼?"])
+def test_process_without_station_asks_instead_of_guessing(text):
+    resp = F.process(text)
+    assert resp.card_type == "need_station"
+    assert resp.tool_calls == []
+
+
+def test_process_reference_uses_last_station():
+    resp = F.process("거기 대체역은?", session_ctx={"last_station_id": "sadang"})
+    assert "사당" in resp.text and "방배역" in resp.text
+
+
+def test_process_greeting():
+    assert F.process("안녕").card_type == "help"

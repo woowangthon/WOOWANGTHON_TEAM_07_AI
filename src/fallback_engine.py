@@ -1,32 +1,47 @@
 """규칙 기반 폴백 엔진 (Fallback Engine).
 
-FE/Prototype-v2/js/ai-agent.js의 규칙 기반 의도 분류 및 도구 호출 시뮬레이션 로직을 Python으로 100% 포팅한 모듈입니다.
-LLM API 장애, 타임아웃(2.5초 초과), Rate Limit(429) 발생 시 즉시 무중단 대체 응답을 생성합니다.
+FE/Prototype-v2/js/ai-agent.js의 규칙 기반 의도 분류를 Python으로 옮긴 모듈입니다.
+LLM API 장애, 타임아웃, Rate Limit(429) 시 오케스트레이터가 이 엔진으로 같은 스키마의 응답을 만듭니다.
+LLM을 쓰지 않으므로 안내 문장은 모두 도구 결과를 채워 넣는 템플릿입니다.
 """
 
-from datetime import datetime
 import re
-from typing import Optional, List, Dict, Any
-from .models import (
-    ChatResponse, ChatResponseMetadata, ActionPayload, ToolCallRecord
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+
+from .mock_data import (
+    ALIASES, NAMES_REQUIRING_SUFFIX, OUT_OF_COVERAGE_KEYWORDS, STATIONS, station_name,
 )
-from .tools import (
-    resolve_station, get_elevator_status, get_broken_elevators, plan_trip
+from .models import ActionPayload, ChatResponse, ChatResponseMetadata, ToolCallRecord
+from .tools import get_broken_elevators, get_elevator_status, parse_hhmm, plan_trip
+
+# 문장에서 역 이름을 찾을 때 쓰는 사전: (표기, 역 ID). 긴 표기부터 매칭합니다.
+_STATION_VOCAB: List[Tuple[str, str]] = sorted(
+    [(st["name"], sid) for sid, st in STATIONS.items()] + list(ALIASES.items()),
+    key=lambda x: -len(x[0]),
 )
-from .mock_data import STATIONS, ALIASES, ELEVATORS
+
+# "○○역" 꼴이지만 역 이름이 아닌 표현
+_NOT_STATION_WORDS = {
+    "대체", "다른", "그", "어느", "이", "저", "인접", "근처", "주변", "환승", "출발", "도착",
+    "고장", "고장난", "점검중인", "가까운", "지하철", "전철", "해당", "무슨", "어떤", "모든", "전체",
+    "각", "이번", "다음", "어디", "아무",
+}
+
+_SUGGEST_START = ["강남역 엘리베이터 돼?", "신도림에서 잠실까지 3시까지 가려면?", "지금 고장난 역 알려줘"]
 
 
 class FallbackEngine:
     """LLM 없이 정규식 규칙만으로 ChatResponse를 만드는 폴백 엔진.
 
-    모든 메서드는 classmethod이므로 인스턴스 없이 ``FallbackEngine.process(...)``로 호출합니다.
-    의도 분류 점수표와 시각 파싱 규칙은 AI/docs/IMPLEMENTATION_STATUS.md §4 참고.
+    모든 메서드는 classmethod이므로 인스턴스 없이 FallbackEngine.process(...)로 호출합니다.
+    의도 분류 점수표와 시각 파싱 규칙은 AI/docs/IMPLEMENTATION_STATUS.md §3 참고.
     """
 
-    # 출발역을 알 수 없을 때 쓰는 기본 출발역 (시스템 프롬프트 명세와 동일하게 신도림)
+    # 출발역을 알 수 없을 때 쓰는 기본 출발역 (시스템 프롬프트 명세 §5.1과 동일)
     DEFAULT_ORIGIN = "sindorim"
 
-    # 정규식 패턴 정의 (Prototype-v2의 RX 그대로 포팅)
+    # 의도 판별 정규식 (Prototype-v2 ai-agent.js의 RX 포팅)
     RX_GREETING = re.compile(r"안녕|도움|뭐\s*할\s*수|사용법|도와줘|하이|hello|\bhi\b|help", re.IGNORECASE)
     RX_OUTAGES = re.compile(r"고장\s*난\s*(역|곳|데)|점검\s*중인\s*(역|곳)|어디\s*(가|가요)?\s*고장|현황|전체|목록|리스트")
     RX_ALTERNATIVE = re.compile(r"고장|안\s*돼|안\s*되|못\s*타|못\s*써|대체|우회|다른\s*역|어디로|멈췄|멈춰")
@@ -38,75 +53,114 @@ class FallbackEngine:
 
     KOREAN_NUMS = {
         "한": 1, "두": 2, "세": 3, "네": 4, "다섯": 5, "여섯": 6,
-        "일곱": 7, "여덟": 8, "아홉": 9, "열": 10, "열한": 11, "열두": 12
+        "일곱": 7, "여덟": 8, "아홉": 9, "열": 10, "열한": 11, "열두": 12,
     }
+    # 긴 표현을 먼저 시도해야 "열한"이 "열"로 잘리지 않습니다.
+    # 뒤에 '간'(3시간)이나 '청'(네 시청역)이 오면 시각이 아닙니다.
+    _RX_HOUR = re.compile(
+        r"(\d{1,2}|열한|열두|다섯|여섯|일곱|여덟|아홉|한|두|세|네|열)\s*시(?![간청])"
+        r"(?:\s*(\d{1,2})\s*분|\s*(반))?"
+    )
 
+    # -------------------------------------------------------------------------
+    # 입력 해석
+    # -------------------------------------------------------------------------
     @classmethod
     def parse_korean_time(cls, text: str) -> Optional[str]:
-        """한국어 자연어 시각 표현을 HH:MM (24시간제) 형식으로 파싱합니다."""
+        """한국어 시각 표현을 HH:MM(24시간제)으로 바꿉니다. 시각이 없거나 범위를 벗어나면 None.
+
+        - "14:45" 그대로 / "정오" 12:00 / "자정" 00:00
+        - "N시", "N시 M분", "N시 반" (N은 숫자 또는 한~열두)
+        - 오후·저녁·밤이면 +12, 오전·아침·새벽 12시는 0시
+        - 오전/오후 표시 없이 1~6시면 오후로 간주
+        """
         t = text.strip()
-        
-        # 1. HH:MM 형식
+
         m = re.search(r"(\d{1,2})\s*:\s*(\d{2})", t)
         if m:
             h, minute = int(m.group(1)), int(m.group(2))
-            return f"{h:02d}:{minute:02d}"
+            return f"{h:02d}:{minute:02d}" if h < 24 and minute < 60 else None
 
-        # 2. 정오 / 자정
         if "정오" in t:
             return "12:00"
         if "자정" in t:
             return "00:00"
 
-        # 3. '오후/오전 N시 M분/반'
+        m = cls._RX_HOUR.search(t)
+        if not m:
+            return None
+        h_str, m_str, half = m.group(1), m.group(2), m.group(3)
+        h = int(h_str) if h_str.isdigit() else cls.KOREAN_NUMS[h_str]
+        minute = 30 if half else (int(m_str) if m_str else 0)
+
         is_pm = bool(re.search(r"오후|저녁|밤", t))
         is_am = bool(re.search(r"오전|아침|새벽", t))
-
-        time_match = re.search(r"(\d{1,2}|한|두|세|네|다섯|여섯|일곱|여덟|아홉|열|열한|열두)\s*시(?:\s*(\d{1,2})분|\s*(반))?", t)
-        if not time_match:
-            return None
-
-        h_str = time_match.group(1)
-        h = cls.KOREAN_NUMS.get(h_str, int(h_str) if h_str.isdigit() else 0)
-
-        m_str = time_match.group(2)
-        half_str = time_match.group(3)
-
-        minute = 30 if half_str else (int(m_str) if m_str else 0)
-
         if is_pm and h < 12:
             h += 12
         elif is_am and h == 12:
             h = 0
         elif not is_am and not is_pm and 1 <= h <= 6:
-            # 관례상 1~6시는 오후로 추정
             h += 12
 
-        return f"{h:02d}:{minute:02d}"
+        return f"{h:02d}:{minute:02d}" if h < 24 and minute < 60 else None
 
     @classmethod
-    def extract_stations(cls, text: str) -> List[Dict[str, Any]]:
-        """텍스트에 언급된 지하철역들을 순서대로 추출합니다."""
-        results = []
-        seen = set()
+    def extract_mentions(cls, text: str) -> Dict[str, List]:
+        """문장에서 역 언급을 찾습니다.
 
-        # 알려진 별칭 및 역명 검색
-        words = re.findall(r"[가-힣0-9a-zA-Z_]+", text)
-        for w in words:
-            res = resolve_station(w)
-            if res.coverage == "SUPPORTED" and res.station_id and res.station_id not in seen:
-                seen.add(res.station_id)
-                results.append({"id": res.station_id, "name": res.name, "lines": res.lines})
+        Returns:
+            {
+              "stations": 지원 역 [{"id", "name", "lines"}] (문장 등장 순서, 중복 제거),
+              "unsupported": 서비스 범위 밖 키워드 목록 (예: ["판교"]),
+              "unknown": "○○역" 꼴인데 사전에 없는 이름 목록 (예: ["부평"]),
+            }
+        """
+        found: List[Tuple[int, str]] = []
+        taken = [False] * len(text)
+        for word, sid in _STATION_VOCAB:
+            for m in re.finditer(re.escape(word), text):
+                s, e = m.start(), m.end()
+                if any(taken[s:e]):
+                    continue
+                if word in NAMES_REQUIRING_SUFFIX and not text.startswith("역", e):
+                    continue
+                # "강남구청역"처럼 더 긴 역 이름의 앞부분이면 다른 역입니다.
+                tail = re.match(r"[가-힣A-Za-z0-9]*", text[e:]).group(0)
+                if tail.endswith("역") and len(tail) > 1:
+                    continue
+                for i in range(s, e):
+                    taken[i] = True
+                found.append((s, sid))
 
-        return results
+        stations, seen = [], set()
+        for _, sid in sorted(found):
+            if sid not in seen:
+                seen.add(sid)
+                st = STATIONS[sid]
+                stations.append({"id": sid, "name": st["name"], "lines": st["lines"]})
+
+        lowered = text.lower()
+        unsupported = [kw for kw in OUT_OF_COVERAGE_KEYWORDS if kw.lower() in lowered]
+
+        unknown = []
+        for m in re.finditer(r"([가-힣A-Za-z0-9]{1,10})역", text):
+            if any(taken[m.start():m.end() - 1]):
+                continue
+            word = m.group(1)
+            if word in _NOT_STATION_WORDS or any(kw in word for kw in OUT_OF_COVERAGE_KEYWORDS):
+                continue
+            unknown.append(word)
+
+        return {"stations": stations, "unsupported": unsupported, "unknown": unknown}
 
     @classmethod
     def classify_intent(cls, text: str, stations: List[Dict[str, Any]], parsed_time: Optional[str]) -> str:
-        """점수 기반 규칙으로 사용자 의도를 분류합니다."""
-        scores = {
-            "departure": 0, "alternative": 0, "outages": 0,
-            "route": 0, "elevator": 0, "greeting": 0
-        }
+        """점수 기반 규칙으로 의도를 분류합니다.
+
+        반환값: departure | route | alternative | outages | elevator | greeting
+        (모든 점수가 0 이하이면 elevator)
+        """
+        scores = {"departure": 0, "alternative": 0, "outages": 0, "route": 0, "elevator": 0, "greeting": 0}
 
         if cls.RX_DEPARTURE_STRONG.search(text):
             scores["departure"] += 4
@@ -123,8 +177,8 @@ class FallbackEngine:
         if "대체역" in text or "우회" in text:
             scores["alternative"] += 3
 
-        if cls.RX_OUTAGES.search(text):
-            scores["outages"] += 0 if stations else 6
+        if cls.RX_OUTAGES.search(text) and not stations:
+            scores["outages"] += 6
 
         if cls.RX_ROUTE.search(text):
             scores["route"] += 3
@@ -135,14 +189,33 @@ class FallbackEngine:
 
         if cls.RX_ELEVATOR.search(text):
             scores["elevator"] += 2
-        if cls.RX_GREETING.search(text):
-            scores["greeting"] += 0 if stations else 2
+        if cls.RX_GREETING.search(text) and not stations:
+            scores["greeting"] += 2
 
         if scores["outages"] > 0:
             scores["alternative"] -= 2
 
-        best = max(scores.items(), key=lambda x: x[1])
-        return best[0] if best[1] > 0 else "elevator"
+        best, score = max(scores.items(), key=lambda x: x[1])
+        return best if score > 0 else "elevator"
+
+    # -------------------------------------------------------------------------
+    # 응답 생성
+    # -------------------------------------------------------------------------
+    @staticmethod
+    def _resp(session_id: str, text: str, card_type: str, **kw) -> ChatResponse:
+        return ChatResponse(
+            session_id=session_id, text=text, card_type=card_type,
+            metadata=ChatResponseMetadata(engine="fallback", fallback_used=True),
+            **kw,
+        )
+
+    @staticmethod
+    def _now_from(current_time: Optional[str]) -> datetime:
+        now = datetime.now().replace(second=0, microsecond=0)
+        if current_time:
+            h, m = parse_hhmm(current_time, "current_time")
+            now = now.replace(hour=h, minute=m)
+        return now
 
     @classmethod
     def process(
@@ -150,7 +223,7 @@ class FallbackEngine:
         message: str,
         session_id: str = "default_session",
         current_time: Optional[str] = None,
-        session_ctx: Optional[Dict[str, Any]] = None
+        session_ctx: Optional[Dict[str, Any]] = None,
     ) -> ChatResponse:
         """사용자 메시지를 처리하여 완전한 ChatResponse를 생성합니다.
 
@@ -159,7 +232,7 @@ class FallbackEngine:
         Args:
             message: 사용자 원문 메시지.
             session_id: 응답에 그대로 실어 보낼 세션 ID.
-            current_time: 현재 사용하지 않습니다. (시간 계산은 서버의 현재 시각 기준)
+            current_time: 기준 시각 "HH:MM". 없으면 서버 현재 시각.
             session_ctx: {"last_station_id": ...} 형태의 세션 슬롯. 읽기만 하며,
                 응답 후 슬롯 갱신은 호출하는 쪽에서 해야 합니다.
 
@@ -168,167 +241,179 @@ class FallbackEngine:
         """
         text = message.strip()
         ctx = session_ctx or {}
+        now = cls._now_from(current_time)
 
-        stations = cls.extract_stations(text)
+        mentions = cls.extract_mentions(text)
+        stations = mentions["stations"]
         parsed_time = cls.parse_korean_time(text)
         intent = cls.classify_intent(text, stations, parsed_time)
 
-        # 문맥 보정: 역명이 없고 "거기" 등의 지칭어가 있는 경우 직전 역 사용
-        if not stations and cls.RX_REFERENCE.search(text) and ctx.get("last_station_id"):
-            last_id = ctx["last_station_id"]
-            st = STATIONS.get(last_id)
-            if st:
-                stations = [{"id": last_id, "name": st["name"], "lines": st["lines"]}]
+        # 서비스 범위 밖 역을 물으면 다른 역으로 대신 답하지 않습니다.
+        if mentions["unsupported"]:
+            name = mentions["unsupported"][0]
+            return cls._resp(
+                session_id,
+                f"죄송해요. '{name}'은(는) 아직 지원하지 않는 지역/노선이에요. "
+                "현재는 수도권 지하철 1~8호선 역만 안내할 수 있어요.",
+                "out_of_coverage",
+                tool_calls=[ToolCallRecord(name="resolve_station", args={"query": name})],
+                suggestions=_SUGGEST_START,
+            )
 
-        # ---------------------------------------------------------------------
-        # 1. 인사 / 도움말
-        # ---------------------------------------------------------------------
+        # 문맥 보정: 역 언급이 없고 "거기" 같은 지칭어가 있으면 직전 역 사용
+        if not stations and cls.RX_REFERENCE.search(text) and ctx.get("last_station_id") in STATIONS:
+            sid = ctx["last_station_id"]
+            st = STATIONS[sid]
+            stations = [{"id": sid, "name": st["name"], "lines": st["lines"]}]
+
         if intent == "greeting" and not stations:
-            return ChatResponse(
-                session_id=session_id,
-                text="안녕하세요! 지하철 엘리베이터 가동 현황과 휠체어 대체 우회 경로, 그리고 출발 시각을 안내하는 '우왕이'입니다.\n어떤 역을 도와드릴까요?",
-                card_type="help",
-                suggestions=["강남역 엘리베이터 돼?", "신도림에서 잠실까지 3시까지 가려면?", "지금 고장난 역 알려줘"],
-                metadata=ChatResponseMetadata(engine="fallback", fallback_used=True)
+            return cls._resp(
+                session_id,
+                "안녕하세요! 지하철 엘리베이터 가동 현황과 휠체어 대체 우회 경로, 그리고 출발 시각을 안내하는 '우왕이'입니다.\n"
+                "어떤 역을 도와드릴까요?",
+                "help",
+                suggestions=_SUGGEST_START,
             )
 
-        # ---------------------------------------------------------------------
-        # 2. 고장 목록 조회 (outages)
-        # ---------------------------------------------------------------------
         if intent == "outages":
-            outages_res = get_broken_elevators()
-            tool_calls = [ToolCallRecord(name="get_broken_elevators", args={})]
-            actions: List[ActionPayload] = []
+            return cls._outages(session_id)
 
-            if not outages_res.outages:
-                return ChatResponse(
-                    session_id=session_id,
-                    text="현재 수도권 지하철 1~8호선 모든 역의 엘리베이터가 정상 운행 중입니다 🙂",
-                    card_type="outages_empty",
-                    tool_calls=tool_calls,
-                    suggestions=["강남역 엘리베이터 돼?", "사용법 알려줘"],
-                    metadata=ChatResponseMetadata(engine="fallback", fallback_used=True)
-                )
-
-            top_outage = outages_res.outages[0]
-            actions.append(ActionPayload(
-                type="openStation",
-                label=f"{top_outage.station_name}역 상세 보기",
-                payload={"station_id": top_outage.station_id}
-            ))
-
-            summary_text = f"현재 엘리베이터 이용 불가 역은 총 {outages_res.count}곳입니다.\n"
-            summary_text += f"가장 심각한 곳은 {top_outage.station_name}역({top_outage.status})입니다."
-
-            return ChatResponse(
-                session_id=session_id,
-                text=summary_text,
-                card_type="outages_list",
-                actions=actions,
-                tool_calls=tool_calls,
-                suggestions=[f"{top_outage.station_name}역 대체역은?", "강남역 엘리베이터 돼?"],
-                metadata=ChatResponseMetadata(engine="fallback", fallback_used=True)
-            )
-
-        # ---------------------------------------------------------------------
-        # 3. 출발 시각 역산 / 경로 탐색 (departure / route)
-        # ---------------------------------------------------------------------
-        if intent in ["departure", "route"]:
-            origin_id = cls.DEFAULT_ORIGIN
-            dest_id = cls.DEFAULT_ORIGIN
-
-            if len(stations) >= 2:
-                # "A에서 B까지" 판정
-                origin_id = stations[0]["id"]
-                dest_id = stations[1]["id"]
-            elif len(stations) == 1:
-                dest_id = stations[0]["id"]
-                origin_id = ctx.get("last_station_id") or cls.DEFAULT_ORIGIN
-
-            plan_res = plan_trip(
-                start_id=origin_id,
-                end_id=dest_id,
-                arrive_by=parsed_time
-            )
-
-            tool_calls = [
-                ToolCallRecord(name="resolve_station", args={"query": dest_id}),
-                ToolCallRecord(name="plan_trip", args={"start_id": origin_id, "end_id": dest_id, "arrive_by": parsed_time})
-            ]
-
-            actions = [
-                ActionPayload(
-                    type="openTime",
-                    label="출발 계산 탭에서 열기",
-                    payload={"originId": origin_id, "destId": dest_id, "arriveBy": parsed_time}
-                )
-            ]
-
-            dest_name = STATIONS.get(dest_id, {}).get("name", dest_id)
-            origin_name = STATIONS.get(origin_id, {}).get("name", origin_id)
-
-            if parsed_time:
-                msg = f"{origin_name}역에서 {dest_name}역까지 {parsed_time}까지 도착하시려면 **{plan_res.departure_time}**에 출발하세요. "
-                msg += f"({plan_res.board_time} 열차 탑승 시 {plan_res.arrival_time} 도착 예정)"
+        if not stations:
+            if mentions["unknown"]:
+                ask = f"'{mentions['unknown'][0]}역'은 찾을 수 없는 역이에요. 역 이름을 다시 확인해 주세요."
+            elif intent in ("departure", "route"):
+                ask = "어느 역까지 가시는지 알려 주세요. 예: \"잠실까지 3시까지 가려면?\""
             else:
-                msg = f"{origin_name}역에서 {dest_name}역으로 지금 출발하시면 {plan_res.departure_time}에 나서서 {plan_res.arrival_time}경 도착합니다."
+                ask = "어느 역을 확인해 드릴까요? 예: \"강남역 엘리베이터 돼?\""
+            return cls._resp(session_id, ask, "need_station", suggestions=_SUGGEST_START)
 
-            if plan_res.warnings:
-                msg += f"\n⚠️ {plan_res.warnings[0]}"
+        if intent in ("departure", "route"):
+            return cls._trip(session_id, stations, parsed_time, ctx, now)
 
-            return ChatResponse(
-                session_id=session_id,
-                text=msg,
-                card_type="trip_plan",
-                actions=actions,
-                tool_calls=tool_calls,
-                suggestions=[f"{dest_name}역 엘리베이터 상태는?", "지금 고장난 역 알려줘"],
-                metadata=ChatResponseMetadata(engine="fallback", fallback_used=True)
+        return cls._elevator(session_id, stations[0])
+
+    @classmethod
+    def _outages(cls, session_id: str) -> ChatResponse:
+        res = get_broken_elevators()
+        tool_calls = [ToolCallRecord(name="get_broken_elevators", args={})]
+        if not res.outages:
+            return cls._resp(
+                session_id,
+                "현재 수도권 지하철 1~8호선 모든 역의 엘리베이터가 정상 운행 중입니다 🙂",
+                "outages_empty", tool_calls=tool_calls,
+                suggestions=["강남역 엘리베이터 돼?", "사용법 알려줘"],
             )
-
-        # ---------------------------------------------------------------------
-        # 4. 엘리베이터 상태 / 대체역 안내 (elevator / alternative)
-        # ---------------------------------------------------------------------
-        target_st = stations[0] if stations else {"id": "gangnam", "name": "강남"}
-        sid = target_st["id"]
-        status_res = get_elevator_status(sid)
-
-        tool_calls = [
-            ToolCallRecord(name="resolve_station", args={"query": target_st["name"]}),
-            ToolCallRecord(name="get_elevator_status", args={"station_id": sid})
-        ]
-
-        actions = [
-            ActionPayload(
-                type="openStation",
-                label=f"{status_res.station_name}역 상세 보기",
-                payload={"station_id": sid}
-            )
-        ]
-
-        if status_res.overall_status == "AVAILABLE":
-            resp_text = f"현재 {status_res.station_name}역의 모든 엘리베이터는 정상 운행 중입니다. 휠체어 이용에 불편함이 없습니다 🙂"
-        elif status_res.overall_status in ["PARTIAL", "UNAVAILABLE"]:
-            resp_text = f"현재 {status_res.station_name}역의 엘리베이터는 **{status_res.overall_status}** 상태로 일부 또는 전체 구간 이용이 어렵습니다."
-            plan_res = plan_trip(start_id=sid, end_id=sid)
-            if plan_res.detours:
-                detour = plan_res.detours[0]
-                resp_text += f"\n💡 **추천 대체역**: 인접한 **{detour.alternative_station_name}역** 엘리베이터를 이용하세요 ({detour.bus_tip})."
-                actions.insert(0, ActionPayload(
-                    type="showAlternative",
-                    label="지도에서 우회 경로 보기",
-                    payload={"from": sid, "to": detour.alternative_station_id, "path": [sid, detour.alternative_station_id]}
-                ))
-        else:
-            resp_text = f"{status_res.station_name}역의 실시간 엘리베이터 정보가 현재 준비되지 않았습니다."
-
-        return ChatResponse(
-            session_id=session_id,
-            text=resp_text,
-            card_type="elevator_status",
-            actions=actions,
+        top = res.outages[0]
+        names = ", ".join(f"{o.station_name}역" for o in res.outages[:3])
+        more = " 등" if res.count > 3 else ""
+        return cls._resp(
+            session_id,
+            f"현재 엘리베이터 이용이 어려운 역은 총 {res.count}곳입니다: {names}{more}.",
+            "outages_list",
             tool_calls=tool_calls,
-            suggestions=[f"{status_res.station_name}역까지 가려면 언제 출발해?", "지금 고장난 역 알려줘"],
-            metadata=ChatResponseMetadata(engine="fallback", fallback_used=True)
+            actions=[
+                ActionPayload(type="openStation", label=f"{o.station_name}역 상세 보기",
+                              payload={"station_id": o.station_id})
+                for o in res.outages[:3]
+            ],
+            suggestions=[f"{top.station_name}역 대체역은?", "강남역 엘리베이터 돼?"],
         )
 
+    @classmethod
+    def _trip(cls, session_id: str, stations: List[dict], parsed_time: Optional[str],
+              ctx: Dict[str, Any], now: datetime) -> ChatResponse:
+        notes = []
+        tool_calls = [ToolCallRecord(name="resolve_station", args={"query": s["name"]}) for s in stations[:2]]
+        if len(stations) >= 2:
+            origin_id, dest_id = stations[0]["id"], stations[1]["id"]
+        else:
+            dest_id = stations[0]["id"]
+            origin_id = ctx.get("last_station_id") if ctx.get("last_station_id") in STATIONS else None
+            if not origin_id:
+                origin_id = cls.DEFAULT_ORIGIN
+                notes.append(f"출발역이 지정되지 않아 {station_name(origin_id)}역 기준으로 안내합니다.")
+
+        origin_name, dest_name = station_name(origin_id), station_name(dest_id)
+        if origin_id == dest_id:
+            return cls._resp(
+                session_id,
+                f"출발역과 도착역이 같은 {origin_name}역이에요. 출발역과 도착역을 함께 말씀해 주세요. "
+                f"예: \"신도림에서 {dest_name}까지 3시까지 가려면?\"",
+                "need_station", tool_calls=tool_calls, suggestions=_SUGGEST_START,
+            )
+
+        plan_args = {"start_id": origin_id, "end_id": dest_id, "arrive_by": parsed_time}
+        plan = plan_trip(**plan_args, now=now)
+        tool_calls.append(ToolCallRecord(name="plan_trip", args=plan_args))
+
+        lines = notes[:]
+        if not plan.is_possible:
+            lines.append(plan.warnings[0])
+            return cls._resp(session_id, " ".join(lines), "trip_unsupported", tool_calls=tool_calls,
+                             suggestions=[f"{dest_name}역 엘리베이터 상태는?", "지금 고장난 역 알려줘"])
+
+        if parsed_time:
+            lines.append(
+                f"{origin_name}역에서 {dest_name}역까지 {parsed_time}까지 도착하시려면 "
+                f"**{plan.departure_time}**에 출발하세요. ({plan.board_time} 열차 탑승, {plan.arrival_time} 도착 예정)"
+            )
+            if plan.is_late:
+                lines.append("⏰ 지금 바로 출발해도 도착 희망 시각보다 늦을 수 있어요.")
+        else:
+            lines.append(
+                f"{origin_name}역에서 {dest_name}역으로 {plan.departure_time}에 출발하시면 "
+                f"{plan.arrival_time}경 도착합니다. (열차 {plan.route.total_stops}개 역, 엘리베이터·대기 여유 포함)"
+            )
+        lines += [f"⚠️ {w}" for w in plan.warnings]
+
+        actions = [ActionPayload(
+            type="openTime", label="출발 계산 탭에서 열기",
+            payload={"originId": origin_id, "destId": dest_id, "arriveBy": parsed_time},
+        )]
+        for d in plan.detours:
+            actions.append(ActionPayload(
+                type="showAlternative", label=f"{d.alternative_station_name}역 우회 경로 보기",
+                payload={"from": d.broken_station_id, "to": d.alternative_station_id,
+                         "path": [d.broken_station_id, d.alternative_station_id]},
+            ))
+
+        return cls._resp(
+            session_id, "\n".join(lines), "trip_plan", actions=actions, tool_calls=tool_calls,
+            suggestions=[f"{dest_name}역 엘리베이터 상태는?", "지금 고장난 역 알려줘"],
+        )
+
+    @classmethod
+    def _elevator(cls, session_id: str, target: dict) -> ChatResponse:
+        sid = target["id"]
+        status = get_elevator_status(sid)
+        name = status.station_name
+        tool_calls = [
+            ToolCallRecord(name="resolve_station", args={"query": target["name"]}),
+            ToolCallRecord(name="get_elevator_status", args={"station_id": sid}),
+        ]
+        actions = [ActionPayload(type="openStation", label=f"{name}역 상세 보기", payload={"station_id": sid})]
+
+        if status.overall_status == "AVAILABLE":
+            text = f"현재 {name}역의 모든 엘리베이터는 정상 운행 중입니다. 휠체어 이용에 불편함이 없습니다 🙂"
+        elif status.overall_status in ("PARTIAL", "UNAVAILABLE"):
+            broken = [s for s in status.segments if s.status != "AVAILABLE"]
+            where = ", ".join(f"{s.location}({s.floors})" for s in broken)
+            scope = "전체" if status.overall_status == "UNAVAILABLE" else "일부"
+            text = f"현재 {name}역 엘리베이터 {scope} 구간을 이용할 수 없습니다: {where}."
+            plan_args = {"start_id": sid, "end_id": sid}
+            plan = plan_trip(**plan_args)
+            tool_calls.append(ToolCallRecord(name="plan_trip", args=plan_args))
+            if plan.detours:
+                d = plan.detours[0]
+                text += f"\n💡 **추천 대체역**: 인접한 **{d.alternative_station_name}역**을 이용하세요. ({d.bus_tip})"
+                actions.insert(0, ActionPayload(
+                    type="showAlternative", label="지도에서 우회 경로 보기",
+                    payload={"from": sid, "to": d.alternative_station_id, "path": [sid, d.alternative_station_id]},
+                ))
+        else:
+            text = f"{name}역의 실시간 엘리베이터 정보가 아직 준비되지 않았습니다."
+
+        return cls._resp(
+            session_id, text, "elevator_status", actions=actions, tool_calls=tool_calls,
+            suggestions=[f"{name}역까지 가려면 언제 출발해?", "지금 고장난 역 알려줘"],
+        )

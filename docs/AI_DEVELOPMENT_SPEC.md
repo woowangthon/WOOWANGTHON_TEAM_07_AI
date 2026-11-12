@@ -1,6 +1,6 @@
 # AI 파트 기술 명세서 및 개발 진행 계획서 (AI Development Spec)
 
-> 본 문서는 `AI/AI파트_설계_검토.md`에서 도출된 설계 검토 결과 및 수정안을 기반으로, 실제 구현에 착수할 수 있도록 구체적인 아키텍처, 도구 스키마, 오케스트레이션 파이프라인, R&R, 개발 마일스톤을 정의한 기술 문서이다.
+> 본 문서는 [`DESIGN_REVIEW.md`](./DESIGN_REVIEW.md)(AI 파트 설계 검토)에서 도출된 설계 검토 결과 및 수정안을 기반으로, 실제 구현에 착수할 수 있도록 구체적인 아키텍처, 도구 스키마, 오케스트레이션 파이프라인, R&R, 개발 마일스톤을 정의한 기술 문서이다.
 >
 > 이 문서는 **목표 설계**를 다룬다. 현재 코드가 어디까지 구현되었고 명세와 어떻게 다른지는 [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md)를 참고한다.
 
@@ -108,9 +108,9 @@ sequenceDiagram
   {
     "station_id": str,          # 예: "gangnam", "hongik", "cityhall" (매칭 실패 시 None)
     "name": str,                # 표준 역명 (예: "강남", "홍대입구")
-    "lines": list[str],         # 소속 노선 ID 목록 (예: ["2", "SB"])
+    "lines": list[str],         # 소속 노선 ID 목록, 1~8호선만 (예: ["1", "2"])
     "coverage": "SUPPORTED" | "OUT_OF_COVERAGE" | "NOT_FOUND",
-    "confidence": float         # 매칭 신뢰도 (1.0=정확 일치, 0.8=별칭/퍼지 매칭)
+    "confidence": float         # 매칭 신뢰도 (1.0=정확 일치, 0.95=별칭, 0.8=접두어 일치, 0.0=없음)
   }
   ```
 
@@ -221,7 +221,7 @@ sequenceDiagram
 - **반환값 (Response)**:
   ```python
   {
-    "is_possible": bool,
+    "is_possible": bool,           # false면 경로 계산 미지원 구간. 시간 값을 안내하지 말고 warnings를 전달
     "departure_time": "HH:MM",     # 집/출발지에서 출발해야 하는 권장 시각
     "board_time": "HH:MM",         # 첫 열차 승차 시각
     "arrival_time": "HH:MM",       # 목적지 역 출구 도착 예정 시각
@@ -257,7 +257,7 @@ sequenceDiagram
     "breakdown": {
       "home_walk": 7,
       "station_entry_elevator": 3,
-      "worst_case_wait": 4,        # 배차 간격(3분) + 안전 여유(1분) 적용 (※ 현재 Mock 구현은 안전 여유 2분 → 5분)
+      "worst_case_wait": 5,        # 배차 간격(3분) + 안전 여유(2분) 적용
       "subway_ride": 24,
       "transfer_walk": 0,
       "exit_elevator": 3
@@ -330,20 +330,23 @@ Content-Type: application/json
 ## 5. 프롬프트 및 컨텍스트 엔지니어링
 
 ### 5.1 시스템 프롬프트 명세
+> 실제 코드: `src/prompts.py`의 `SYSTEM_PROMPT_TEMPLATE`. 문구를 바꿀 때는 코드와 이 절을 함께 고친다.
+
 ```text
 당신은 수도권 지하철 교통약자(휠체어, 유모차 이용자 등)를 위한 AI 이동 안내 비서 '우왕이'입니다.
 
 [핵심 행동 수칙]
 1. 당신은 스스로 경로, 시간, 엘리베이터 상태를 절대 계산하거나 추측하지 않습니다.
 2. 모든 정보는 반드시 제공된 도구(resolve_station, get_elevator_status, get_broken_elevators, plan_trip)를 호출하여 확인한 뒤 안내합니다.
-3. 역명이 언급되면 항상 resolve_station을 먼저 호출하여 고유 ID를 확인하십시오.
+3. 역명이 언급되면 항상 resolve_station을 먼저 호출하여 고유 ID를 확인하십시오. coverage가 SUPPORTED가 아니면 지원하지 않는 역이라고 안내하십시오.
 4. 사용자 질의에 출발역이 생략되어 있고 시간 역산을 요구할 경우, 세션 컨텍스트의 last_station_id를 확인하고, 그것도 없다면 기본값("sindorim", 신도림역)을 출발역으로 지정하여 계산하고 사용자에게 "출발역이 지정되지 않아 신도림역 기준으로 안내합니다"라고 명확히 밝히십시오.
-5. 안내 문장은 정중하고 명확하게 작성하며, 도구 결과에 명시된 시각, 역명, 우회 팁만을 사실 그대로 전달하십시오.
-6. 도구 결과 외의 임의의 역명이나 임의의 소요 시간을 지어내어 말하면 절대 안 됩니다.
+5. 시각은 반드시 HH:MM(24시간제)으로 바꿔 도구에 전달하십시오. 예: "3시 반" → "15:30".
+6. 안내 문장은 정중하고 명확하게 작성하며, 도구 결과에 명시된 시각, 역명, 우회 팁만을 사실 그대로 전달하십시오.
+7. 도구 결과 외의 임의의 역명이나 임의의 소요 시간을 지어내어 말하면 절대 안 됩니다. 도구가 error나 is_possible=false를 반환하면 그 사실을 그대로 알리십시오.
 
 [현재 세션 컨텍스트]
 - 현재 기준 시각: {current_time}
-- 최근 조회/언급 역: {last_station_name} ({last_station_id})
+- 최근 조회/언급 역: {last_station}
 - 최근 경로: {last_route_summary}
 ```
 
@@ -373,8 +376,8 @@ LLM이 생성한 `text`에 대해 백엔드가 2차 필터링을 수행한다:
    - 불일치 발생(예: 도구 결과는 14:48 출발인데 텍스트는 14:30 출발이라고 씀) 시, LLM 텍스트를 폐기하고 도구 결과 기반의 안전한 표준 템플릿 문장으로 치환한다.
 
 ### 6.2 규칙 기반 폴백 엔진 (Rule-based Fallback)
-- 프로토타입 `FE/Prototype-v2/js/ai-agent.js`의 의도 판별 및 정규식 로직을 Python `FallbackEngine` 클래스(`src/fallback_engine.py`)로 포팅. 의도 분류 점수표와 시각 파싱 규칙은 [`IMPLEMENTATION_STATUS.md` §4](./IMPLEMENTATION_STATUS.md#4-폴백-엔진-fallbackengineprocess-동작) 참고.
-- LLM API 타임아웃(2.5초), Rate Limit(429), Network Error 발생 시 즉시 `FallbackEngine.process()`를 호출하여 50ms 이내에 동일한 스키마의 응답을 반환한다.
+- 프로토타입 `FE/Prototype-v2/js/ai-agent.js`의 의도 판별 및 정규식 로직을 Python `FallbackEngine` 클래스(`src/fallback_engine.py`)로 포팅. 의도 분류 점수표와 시각 파싱 규칙은 [`IMPLEMENTATION_STATUS.md` §3](./IMPLEMENTATION_STATUS.md#3-폴백-엔진-fallbackengineprocess) 참고.
+- LLM API 타임아웃(2.5초), Rate Limit(429), Network Error 발생 시 즉시 `FallbackEngine.process()`를 호출하여 동일한 스키마(`ChatResponse`, `metadata.engine="fallback"`)의 응답을 반환한다.
 
 ---
 
@@ -440,8 +443,8 @@ gantt
 ### Phase 2: 오케스트레이터 및 Function Calling 연동 (D+3 ~ D+4)
 - FastAPI 기반 `/api/chat` 엔드포인트 구현.
 - LLM 클라이언트 연동 및 비동기 처리(`async/await`).
-  - 초기 계획은 OpenRouter / Gemini였으나, 무료 모델이 불안정하여 **학교 마인드로직 FactChat 게이트웨이**(OpenAI 호환 API, `claude-sonnet-5` / `gpt-4o-mini` 등)로 전환했다. 연동 검증 스크립트: `src/schoolApi.py`.
-  - NVIDIA 게이트웨이(`integrate.api.nvidia.com`, `z-ai/glm-5.3-flash`)도 후보로 도구 호출 여부를 실험 중이다: `src/nvidiaApi.py`.
+  - 초기 계획은 OpenRouter / Gemini였으나, 무료 모델이 불안정하여 **학교 마인드로직 FactChat 게이트웨이**(OpenAI 호환 API, `claude-sonnet-5` / `gpt-4o-mini` 등)로 전환했다. 연동 검증 스크립트: `scripts/llm_demo.py`.
+  - NVIDIA 게이트웨이(`integrate.api.nvidia.com`, `z-ai/glm-5.3-flash`)도 후보로 도구 호출 여부를 실험 중이다: `scripts/llm_demo.py --provider nvidia`.
 - 세션 슬롯 메모리(인메모리 TTL 딕셔너리) 및 시스템 프롬프트 동적 주입 구현.
 
 ### Phase 3: 안전 가드 및 백엔드 도메인 서비스 연동 (D+5 ~ D+6)

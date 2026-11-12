@@ -2,38 +2,37 @@
 
 수도권 지하철 교통약자(휠체어·유모차 이용자)를 위한 실시간 엘리베이터 상태 기반 대체 경로 & AI 출발 안내 서비스의 AI 파트 레포지토리입니다.
 
----
-
-## 1. 주요 문서 안내
-
-- **AI 파트 기술 명세서 및 개발 계획**: [`docs/AI_DEVELOPMENT_SPEC.md`](./docs/AI_DEVELOPMENT_SPEC.md)
-  - 핵심 아키텍처 및 오케스트레이션 시퀀스 다이어그램
-  - Function Calling 4대 도구(`resolve_station`, `get_elevator_status`, `get_broken_elevators`, `plan_trip`) 입출력 스키마
-  - `/api/chat` API 인터페이스 및 프롬프트 명세
-  - 후처리 환각 가드 및 규칙 기반 폴백 엔진
-  - 백엔드 협업 R&R 및 정량적 평가 계획 (50개 벤치마크)
-- **구현 현황 및 동작 상세**: [`docs/IMPLEMENTATION_STATUS.md`](./docs/IMPLEMENTATION_STATUS.md)
-  - 현재 코드가 실제로 어떻게 동작하는지 (도구별 매칭 규칙, 시간 계산 공식, 폴백 의도 분류)
-  - 명세서와 현재 구현의 차이, 알려진 이슈
-- **AI 파트 설계 검토 및 수정안**: [`AI파트_설계_검토.md`](./AI파트_설계_검토.md)
-  - 초기 초안 검토 의견, 도구 결함 수정 근거 및 아키텍처 원칙
-- **작업 카드 [CARD-004]**: [`../docs/cards/004-ai-development-plan.md`](../docs/cards/004-ai-development-plan.md)
-- **아키텍처 결정 기록 [DECISION-001]**: [`../docs/decisions/001-ai-architecture-and-tool-design.md`](../docs/decisions/001-ai-architecture-and-tool-design.md)
+> AI 코딩 에이전트는 [`AGENTS.md`](./AGENTS.md)를 먼저 읽으세요.
 
 ---
 
-## 2. 핵심 원칙 및 아키텍처 요약
+## 1. 문서
+
+| 문서 | 내용 |
+|---|---|
+| [`AGENTS.md`](./AGENTS.md) | AI 에이전트용 작업 가이드 — 원칙, 명령어, 코드 지도, 작업 규칙 |
+| [`docs/IMPLEMENTATION_STATUS.md`](./docs/IMPLEMENTATION_STATUS.md) | 현재 구현 현황 — 도구·폴백 엔진의 실제 동작, 명세와의 차이, 변경 이력 |
+| [`docs/AI_DEVELOPMENT_SPEC.md`](./docs/AI_DEVELOPMENT_SPEC.md) | 기술 명세 (목표 설계) — 아키텍처, 도구 스키마, `/api/chat`, 프롬프트, R&R, 평가 계획 |
+| [`docs/DESIGN_REVIEW.md`](./docs/DESIGN_REVIEW.md) | 초기 설계 검토 및 수정안 (기록용) |
+| [`../docs/cards/004-ai-development-plan.md`](../docs/cards/004-ai-development-plan.md) | 작업 카드 [CARD-004] |
+| [`../docs/decisions/001-ai-architecture-and-tool-design.md`](../docs/decisions/001-ai-architecture-and-tool-design.md) | 아키텍처 결정 기록 [DECISION-001] |
+
+---
+
+## 2. 핵심 원칙 및 아키텍처
+
+**LLM은 해석하고, 백엔드는 계산한다.** LLM은 의도 파악과 안내 문장만 맡고, 경로·시간·엘리베이터 상태는 도구가 계산하며, 화면용 액션 데이터는 백엔드가 직접 조립합니다.
 
 ```text
 [ 사용자 질의 ]
        ↓
-[ AI 오케스트레이터 (FastAPI) ]
-  ├── 1. 슬롯/문맥 주입 및 LLM 도구 호출 (의도 분석 및 슬롯 추출)
-  ├── 2. 백엔드 도메인 서비스 도구 실행 (정규화, 엘리베이터 상태, 다익스트라 경로/시간 계산)
-  ├── 3. 액션 데이터(Action Data) 백엔드 직접 조립 (UI 렌더링용)
-  ├── 4. LLM 도구 결과 기반 자연어 설명 문장 생성
-  ├── 5. 후처리 검증 (환각 감지 시 템플릿 문장 치환)
-  └── [장애/타임아웃 시] Python 규칙 기반 폴백 엔진으로 무중단 응답
+[ AI 오케스트레이터 (FastAPI) ]                       ← 미구현 (Phase 2)
+  ├── 1. 세션 슬롯 주입 + LLM 도구 호출 (의도 분석, 슬롯 추출)   src/prompts.py, src/tool_registry.py
+  ├── 2. 도구 실행 (역명 정규화, 엘리베이터 상태, 경로/시간 계산)  src/tools.py
+  ├── 3. 액션 데이터 백엔드 직접 조립 (UI 렌더링용)
+  ├── 4. LLM이 도구 결과로 안내 문장 생성
+  ├── 5. 후처리 검증 (환각 감지 시 템플릿 문장으로 대체)          ← 미구현 (Phase 3)
+  └── [장애/타임아웃 시] 규칙 기반 폴백 엔진                      src/fallback_engine.py
        ↓
 [ 프론트엔드 모바일 웹 챗봇 렌더링 ]
 ```
@@ -44,77 +43,55 @@
 
 ```text
 AI/
-├── src/
-│   ├── __init__.py         # 패키지 공개 API (도구 4종, FallbackEngine, ChatRequest/Response)
-│   ├── models.py           # Pydantic 스키마: 도구 입출력 + /api/chat 요청/응답
-│   ├── tools.py            # 도구 4종 구현 (현재 Mock 데이터 기반)
-│   ├── mock_data.py        # 역·별칭·엘리베이터·대체역 팁·시간 파라미터 Mock 데이터
-│   ├── fallback_engine.py  # LLM 장애 시 쓰는 규칙 기반 응답 엔진 (프로토타입 ai-agent.js 포팅)
-│   ├── config.py           # 환경 설정 (FactChat 게이트웨이, 타임아웃, 세션 TTL) — 아직 다른 모듈에서 사용하지 않음
-│   ├── schoolApi.py        # [실험 스크립트] 학교 FactChat 게이트웨이 Function Calling 왕복 테스트
-│   └── nvidiaApi.py        # [실험 스크립트] NVIDIA API 게이트웨이 Function Calling 호출 테스트
-├── tests/
-│   ├── test_tools.py       # 도구 4종 단위 테스트
-│   └── test_fallback.py    # 폴백 엔진 단위 테스트
-├── docs/
-│   ├── AI_DEVELOPMENT_SPEC.md    # 기술 명세 (목표 설계)
-│   └── IMPLEMENTATION_STATUS.md  # 구현 현황 (현재 코드 기준)
-├── .env.example            # 환경 변수 템플릿
-└── requirements.txt        # 파이썬 의존성
+├── AGENTS.md / CLAUDE.md / GEMINI.md   # 에이전트 가이드 (CLAUDE·GEMINI는 AGENTS를 불러옴)
+├── src/                                # AI.src 패키지
+│   ├── models.py          # Pydantic 스키마: 도구 입출력 + /api/chat 요청/응답
+│   ├── tools.py           # 도구 4종: resolve_station, get_elevator_status, get_broken_elevators, plan_trip
+│   ├── tool_registry.py   # LLM용 도구 정의(TOOL_SPECS) 자동 생성 + 실행기(execute_tool)
+│   ├── prompts.py         # 시스템 프롬프트 템플릿
+│   ├── fallback_engine.py # LLM 장애 시 규칙 기반 응답 엔진
+│   ├── mock_data.py       # 역·별칭·엘리베이터·대체역·시간 상수 Mock 데이터
+│   └── config.py          # 게이트웨이·타임아웃 설정, AI/.env 자동 로딩
+├── scripts/
+│   └── llm_demo.py        # LLM 게이트웨이 도구 호출 왕복 데모 (FactChat / NVIDIA)
+├── tests/                 # pytest 단위 테스트
+├── docs/                  # 명세, 구현 현황, 설계 검토
+├── .env.example           # 환경 변수 템플릿
+├── requirements.txt
+└── conftest.py / pytest.ini
 ```
 
 ---
 
 ## 4. 빠른 시작
 
-### 4.1 설치
-
 Python 3.12 기준으로 검증했습니다.
 
 ```powershell
-pip install -r AI/requirements.txt
+cd AI
+pip install -r requirements.txt
+
+# 테스트
+python -m pytest
+
+# LLM 연동 데모: .env.example을 .env로 복사해 API 키를 넣은 뒤
+python scripts/llm_demo.py "신도림에서 강남까지 3시까지 가려면?"
+python scripts/llm_demo.py --provider nvidia "사당역 엘리베이터 돼?"
 ```
 
-### 4.2 테스트 실행 — 반드시 상위 폴더에서
-
-코드가 `from AI.src.tools import ...` 형태로 import하므로, **`AI/` 폴더의 부모 디렉터리(`woowang_thon/`)에서** 실행해야 합니다. `AI/` 안에서 `pytest tests`를 실행하면 `ModuleNotFoundError: No module named 'AI'`로 수집 단계에서 실패합니다. 같은 이유로 이 레포는 반드시 `AI`라는 이름의 폴더로 클론해야 합니다.
-
-```powershell
-cd woowang_thon        # AI/ 의 부모 폴더
-python -m pytest AI/tests -q
-# 11 passed
-```
-
-### 4.3 LLM 게이트웨이 연동 스크립트 실행
-
-두 스크립트는 오케스트레이터가 아니라 **모델이 도구 호출을 제대로 하는지 확인하는 실험용 스크립트**입니다.
-
-| 스크립트 | 게이트웨이 | 필요한 환경 변수 | 동작 |
-|---|---|---|---|
-| `src/schoolApi.py` | 학교 마인드로직 FactChat | `FACTCHAT_API_KEY` (선택: `FACTCHAT_BASE_URL`, `FACTCHAT_MODEL`) | 도구 호출 → 실제 `tools.py` 실행 → 결과를 넣어 2차 호출로 최종 답변까지 생성 |
-| `src/nvidiaApi.py` | NVIDIA (`integrate.api.nvidia.com`) | `NVIDIA_API_KEY` | `resolve_station` 하나만 정의하고, 모델이 도구를 호출하는지만 출력 (도구 실행 X) |
-
-```powershell
-$env:FACTCHAT_API_KEY = "발급받은키"
-$env:PYTHONIOENCODING = "utf-8"
-python AI/src/schoolApi.py
-```
-
-주의할 점:
-
-- **`.env` 파일은 자동으로 읽히지 않습니다.** 현재 코드에 `python-dotenv` 같은 로더가 없으므로, `.env.example`을 복사해 `.env`를 만들어도 적용되지 않습니다. 위처럼 셸에서 환경 변수를 직접 설정하세요.
-- **Windows 콘솔에서는 `PYTHONIOENCODING=utf-8`(또는 `python -X utf8`)이 필요합니다.** 스크립트가 이모지를 출력하는데, 기본 cp949 콘솔에서는 `UnicodeEncodeError`로 바로 종료됩니다.
-- `schoolApi.py`의 모델 기본값은 `gpt-5.1`로, `.env.example`·`config.py`의 기본값(`claude-sonnet-5`)과 다릅니다. 원하는 모델은 `FACTCHAT_MODEL`로 명시하세요.
+- `.env`는 `src/config.py`가 자동으로 읽습니다. 셸에 같은 환경 변수가 있으면 셸 값이 우선합니다.
+- 기본 모델은 FactChat `gpt-5.1`입니다. `--model` 옵션이나 `FACTCHAT_MODEL`로 바꿀 수 있습니다.
+- `AI/`의 부모 폴더에서 실행해도 됩니다: `python -m pytest AI/tests`, `python AI/scripts/llm_demo.py`.
 
 ---
 
-## 5. 개발 마일스톤 및 현재 진행 상황
+## 5. 진행 상황
 
 | 단계 | 내용 | 상태 |
 |---|---|---|
-| **Phase 1** | 계약 확정 및 4개 도구 스키마/Mock 구현, Python 룰 기반 엔진 포팅 | ✅ 완료 (단위 테스트 11건 통과) |
-| **Phase 2** | FastAPI 오케스트레이터 및 Function Calling 연동 | 🔄 진행 중 — 게이트웨이 연동 실험 스크립트만 있음. `/api/chat` 엔드포인트, 세션 메모리는 미구현 |
-| **Phase 3** | 후처리 환각 가드 및 백엔드 도메인 서비스 연동 | ⏳ 미착수 |
-| **Phase 4** | 50개 벤치마크 평가, 프롬프트 튜닝 및 FE E2E 통합 테스트 | ⏳ 미착수 |
+| **Phase 1** | 도구 4종 스키마/Mock 구현, 규칙 기반 폴백 엔진 포팅 | ✅ 완료 |
+| **Phase 2** | FastAPI 오케스트레이터 및 Function Calling 연동 | 🔄 도구 정의·프롬프트·게이트웨이 데모 완료, `/api/chat`·세션 메모리 미구현 |
+| **Phase 3** | 후처리 환각 가드 및 백엔드 도메인 서비스 연동 | ⏳ |
+| **Phase 4** | 50개 벤치마크 평가, 프롬프트 튜닝, FE E2E 통합 테스트 | ⏳ |
 
-현재 Mock 구현의 제약(2호선 순환선만 경로 계산 등)과 알려진 이슈는 [`docs/IMPLEMENTATION_STATUS.md`](./docs/IMPLEMENTATION_STATUS.md)를 참고하세요.
+현재는 Mock 데이터로 2호선 순환선 구간만 경로를 계산합니다. 자세한 제약은 [`docs/IMPLEMENTATION_STATUS.md`](./docs/IMPLEMENTATION_STATUS.md)를 참고하세요.
