@@ -16,7 +16,8 @@ LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도�
 1. 이 문서
 2. [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) — 지금 코드가 실제로 어떻게 동작하는가
 3. [docs/AI_DEVELOPMENT_SPEC.md](docs/AI_DEVELOPMENT_SPEC.md) — 목표 설계와 FE/BE와의 계약(도구 스키마, `/api/chat`)
-4. [docs/DESIGN_REVIEW.md](docs/DESIGN_REVIEW.md) — 왜 이렇게 설계했는가 (기록용)
+4. [docs/DATA_SPEC.md](docs/DATA_SPEC.md) — 외부 데이터셋 명세, 품질 문제, 도구 스키마와의 대응 (데이터 작업 시 필수)
+5. [docs/DESIGN_REVIEW.md](docs/DESIGN_REVIEW.md) — 왜 이렇게 설계했는가 (기록용)
 
 명세와 코드가 다르면 **코드와 IMPLEMENTATION_STATUS가 현재 사실**이고, 명세는 목표다. 차이를 발견하면 IMPLEMENTATION_STATUS §4에 적는다.
 
@@ -39,6 +40,7 @@ pip install -r requirements.txt          # pydantic, openai, pytest
 python -m pytest                         # 전체 테스트 (68건). 작업 전후로 반드시 실행
 python scripts/llm_demo.py "사당역 엘리베이터 돼?"              # FactChat 게이트웨이 왕복 데모 (API 키 필요)
 python scripts/llm_demo.py --provider nvidia "지금 고장난 역 알려줘"
+python scripts/check_raw_data.py         # data/raw/ 원본 검증 (인코딩·헤더·행 수·값 분포)
 ```
 
 API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 자동으로 읽는다. **키를 코드나 문서에 쓰지 않는다.**
@@ -56,6 +58,7 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 | 시스템 프롬프트 | `src/llm/prompts.py` | 명세 §5.1 (같은 문구 유지) |
 | 폴백 의도 분류·문장 | `src/fallback/engine.py` | `tests/fallback/test_engine.py`, IMPLEMENTATION_STATUS §3 |
 | 게이트웨이·타임아웃 설정 | `src/config.py`, `.env.example` | — |
+| 외부 데이터 원본 추가·교체 | `data/raw/`, `data/sources.json` | `docs/DATA_SPEC.md`, `scripts/check_raw_data.py`로 검증 |
 | 실험용 실행 스크립트 | `scripts/` | — |
 
 다음에 만들 것(Phase 2): FastAPI `/api/chat` 오케스트레이터 (`src/llm/`에 추가). `tools.registry.TOOL_SPECS`/`execute_tool`, `llm.prompts.build_system_prompt`, `config.settings.LLM_TIMEOUT_SECONDS`, `FallbackEngine.process`를 조합하면 된다. 흐름은 명세 §2 시퀀스 다이어그램을 따른다.
@@ -69,7 +72,8 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 - import는 `AI.src.*` 절대 경로(테스트·스크립트) 또는 패키지 내부 상대 경로(`from .tools import ...`)를 쓴다. 레포 폴더 이름은 반드시 `AI`여야 한다.
 - 파일 배치: `src/`는 역할별 하위 패키지(`data/`, `tools/`, `llm/`, `fallback/`)로 나눈다. 여러 계층이 함께 쓰는 `config.py`, `models.py`만 `src/` 바로 아래에 둔다. 테스트는 `tests/` 아래에 `src/`와 같은 구조로 두고, 테스트 파일 이름은 프로젝트 전체에서 겹치지 않게 한다(`tests/`에 `__init__.py`가 없어 이름이 같으면 충돌함).
 - 파일명: Python 모듈은 `snake_case.py`. `scripts/`에 `test_*.py`나 `*_test.py` 이름을 쓰지 않는다(pytest가 수집함).
-- 인코딩: 모든 텍스트 파일은 **UTF-8**. UTF-16으로 저장하면 git이 바이너리로 취급한다.
+- 데이터: `data/raw/`의 원본은 **절대 수정하지 않는다**(인코딩 포함). 다시 받으면 `raw/<제공처>/<받은 날짜>/`에 새로 넣고 `data/sources.json`을 고친다. 가공은 스크립트로 `data/processed/`에 만들며, 손으로 만든 값을 섞지 않는다. 원본 컬럼의 의미가 명세로 확인되지 않았으면 문서에 "추정"이라고 쓴다. 절차는 `docs/DATA_SPEC.md` §3.
+- 인코딩: 직접 작성하는 텍스트 파일은 **UTF-8**. UTF-16으로 저장하면 git이 바이너리로 취급한다.
 - 문서·주석·안내 문장은 한국어. 새 문서는 `docs/`에 만들고 레포 루트에 흩어 놓지 않는다.
 - 커밋 메시지는 `feat:`, `fix:`, `docs:`, `refactor:`, `test:` 접두어. PR은 `.github/pull_request_template.md` 양식.
 
@@ -78,7 +82,7 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 - LLM 타임아웃: 명세 2.5초 vs `config.py` 3.0초
 - 사용할 LLM 모델: 현재 기본값 FactChat `gpt-5.1` (NVIDIA `z-ai/glm-5.3-flash`와 비교 중)
 - 대체역 우선순위: 거리 vs 같은 노선 (설계 검토 §4)
-- 엘리베이터 실데이터 출처와 갱신 주기, 경로 계산을 AI/BE 중 어디서 구현할지
+- 서비스 문구의 "실시간" 표현 (운행 상태 원천 OA-15994는 매시 갱신), 휠체어 환승·이동 여유 시간 고정값, AI가 데이터를 읽는 방식(읽기 전용 DB 뷰 vs BE API), 경로 계산을 AI/BE 중 어디서 구현할지 — `docs/DATA_SPEC.md` §8
 
 ## 8. 레포 밖 관련 문서
 

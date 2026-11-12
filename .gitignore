@@ -52,3 +52,7 @@ logs/
 tmp/
 temp/
 
+
+# 8. 데이터 가공 결과물 (원본 data/raw/는 커밋, 가공 결과는 스크립트로 다시 생성)
+data/processed/*
+!data/processed/.gitkeep

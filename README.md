@@ -12,6 +12,7 @@
 |---|---|
 | [`AGENTS.md`](./AGENTS.md) | AI 에이전트용 작업 가이드 — 원칙, 명령어, 코드 지도, 작업 규칙 |
 | [`docs/IMPLEMENTATION_STATUS.md`](./docs/IMPLEMENTATION_STATUS.md) | 현재 구현 현황 — 도구·폴백 엔진의 실제 동작, 명세와의 차이, 변경 이력 |
+| [`docs/DATA_SPEC.md`](./docs/DATA_SPEC.md) | 외부 데이터 명세 — 데이터셋별 컬럼·품질 문제·커버리지, 도구 스키마 대응, 부족한 데이터 |
 | [`docs/AI_DEVELOPMENT_SPEC.md`](./docs/AI_DEVELOPMENT_SPEC.md) | 기술 명세 (목표 설계) — 아키텍처, 도구 스키마, `/api/chat`, 프롬프트, R&R, 평가 계획 |
 | [`docs/DESIGN_REVIEW.md`](./docs/DESIGN_REVIEW.md) | 초기 설계 검토 및 수정안 (기록용) |
 | [`../docs/cards/004-ai-development-plan.md`](../docs/cards/004-ai-development-plan.md) | 작업 카드 [CARD-004] |
@@ -59,8 +60,13 @@ AI/
 │   │   └── prompts.py       # 시스템 프롬프트 템플릿 (오케스트레이터도 이 패키지에 추가 예정)
 │   └── fallback/
 │       └── engine.py        # LLM 장애 시 규칙 기반 응답 엔진
+├── data/                    # 외부 데이터 (명세: docs/DATA_SPEC.md)
+│   ├── sources.json         # 데이터셋 목록 (파일 경로, 받은 날짜, 컬럼, 역할)
+│   ├── raw/                 # 원본 그대로: <제공처>/<받은 날짜>/<원본 파일명> — 수정 금지
+│   └── processed/           # 전처리 결과 (스크립트로 생성, 커밋하지 않음)
 ├── scripts/
-│   └── llm_demo.py          # LLM 게이트웨이 도구 호출 왕복 데모 (FactChat / NVIDIA)
+│   ├── llm_demo.py          # LLM 게이트웨이 도구 호출 왕복 데모 (FactChat / NVIDIA)
+│   └── check_raw_data.py    # data/raw/ 원본 검증
 ├── tests/                   # pytest 단위 테스트 (src/와 같은 구조: data/, tools/, fallback/)
 ├── docs/                    # 명세, 구현 현황, 설계 검토
 ├── .env.example             # 환경 변수 템플릿
