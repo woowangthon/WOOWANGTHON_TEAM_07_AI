@@ -1,165 +1,17 @@
-"""AI 파트 4대 도구(Tools) 구현체.
+"""도구 4: plan_trip — 경로 탐색 + 엘리베이터 우회 + 출발 시각 역산 통합. 명세 §3.4"""
 
-명세: AI/docs/AI_DEVELOPMENT_SPEC.md §3
-규칙: LLM은 해석만 하고 실제 계산은 도구 함수가 수행합니다.
-
-현재는 mock_data.py 기반 Mock 구현입니다. 백엔드 도메인 서비스(그래프 탐색,
-실시간 엘리베이터 캐시)가 준비되면 같은 입출력 모델을 유지한 채 내부만 교체합니다.
-Mock 구현의 단순화 사항은 AI/docs/IMPLEMENTATION_STATUS.md 참고.
-"""
-
-import re
 from datetime import datetime, timedelta
 from typing import List, Optional, Tuple
 
-from .mock_data import (
-    ALIASES, ALTERNATIVES, DEFAULT_DETOUR_DISTANCE_M, DEFAULT_DETOUR_WALK_MIN,
-    ELEVATORS, LINE_2_LOOP, OUT_OF_COVERAGE_KEYWORDS, STATIONS, TIMING_PARAMS,
-    station_name,
+from ..data.mock_data import (
+    ALTERNATIVES, DEFAULT_DETOUR_DISTANCE_M, DEFAULT_DETOUR_WALK_MIN,
+    LINE_2_LOOP, STATIONS, TIMING_PARAMS, station_name,
 )
-from .models import (
-    BrokenElevatorsOutput, BrokenStationSummary, DetourInfo, ElevatorSegment,
-    ElevatorStatusOutput, PlanTripOutput, ResolveStationOutput, RouteInfo,
-    RouteLeg, TripBreakdown,
-)
-
-# Mock 데이터의 기준 시각은 '현재 − 5분'으로 고정합니다.
-_MOCK_FRESHNESS_MIN = 5
+from ..models import DetourInfo, PlanTripOutput, RouteInfo, RouteLeg, TripBreakdown
+from .common import parse_hhmm
+from .elevator import get_elevator_status, is_blocked
 
 
-def _mock_updated_at(now: Optional[datetime] = None) -> str:
-    base = now or datetime.now()
-    return (base - timedelta(minutes=_MOCK_FRESHNESS_MIN)).strftime("%Y-%m-%dT%H:%M:00+09:00")
-
-
-def parse_hhmm(value: str, field: str = "time") -> Tuple[int, int]:
-    """'HH:MM'(24시간제)을 (시, 분)으로 변환합니다. 형식이 틀리면 ValueError."""
-    m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", (value or "").strip())
-    if not m:
-        raise ValueError(f"{field}는 HH:MM(00:00~23:59) 형식이어야 합니다: {value!r}")
-    return int(m.group(1)), int(m.group(2))
-
-
-# -----------------------------------------------------------------------------
-# 1. resolve_station
-# -----------------------------------------------------------------------------
-def _supported(station_id: str, confidence: float) -> ResolveStationOutput:
-    st = STATIONS[station_id]
-    return ResolveStationOutput(
-        station_id=st["id"], name=st["name"], lines=st["lines"],
-        coverage="SUPPORTED", confidence=confidence,
-    )
-
-
-def resolve_station(query: str) -> ResolveStationOutput:
-    """사용자의 역 이름 표현을 고유 station_id로 정규화하고 커버리지를 판정합니다.
-
-    공백과 노선 표기("2호선")를 지우고 끝의 '역'을 뗀 뒤, 아래 순서로 처음 일치하는 규칙을 반환합니다.
-      1. 표준 역명 또는 역 ID와 정확히 일치  → SUPPORTED, 1.0
-      2. 별칭 사전 일치                    → SUPPORTED, 0.95
-      3. 미지원 역/노선/지역 키워드 포함     → OUT_OF_COVERAGE (station_id=None), 0.9
-      4. 표준 역명의 앞부분과 일치하는 역이 정확히 하나 (2글자 이상)
-                                          → SUPPORTED, 0.8
-      5. 그 외 (후보가 여러 개인 경우 포함)  → NOT_FOUND, 0.0
-    """
-    clean = re.sub(r"\s+", "", query or "")
-    # "선릉 2호선", "시청(1호선)" 같은 노선 표기 제거
-    clean = re.sub(r"\(?[1-9]호선\)?", "", clean)
-    base = re.sub(r"역$", "", clean)
-
-    for sid, st in STATIONS.items():
-        if base == st["name"] or clean == sid:
-            return _supported(sid, 1.0)
-
-    if base in ALIASES:
-        return _supported(ALIASES[base], 0.95)
-
-    for kw in OUT_OF_COVERAGE_KEYWORDS:
-        if kw.lower() in clean.lower():
-            return ResolveStationOutput(
-                station_id=None, name=kw, lines=[],
-                coverage="OUT_OF_COVERAGE", confidence=0.9,
-            )
-
-    if len(base) >= 2:
-        candidates = [sid for sid, st in STATIONS.items() if st["name"].startswith(base)]
-        if len(candidates) == 1:
-            return _supported(candidates[0], 0.8)
-
-    return ResolveStationOutput(
-        station_id=None, name=query, lines=[],
-        coverage="NOT_FOUND", confidence=0.0,
-    )
-
-
-# -----------------------------------------------------------------------------
-# 2. get_elevator_status
-# -----------------------------------------------------------------------------
-def get_elevator_status(station_id: str) -> ElevatorStatusOutput:
-    """특정 역의 구간 단위 엘리베이터 상태와 기준 시각을 반환합니다.
-
-    overall_status는 고장(AVAILABLE이 아닌) 구간 개수로 정합니다:
-    0개 → AVAILABLE, 전부 → UNAVAILABLE, 그 외 → PARTIAL.
-    엘리베이터 데이터가 없는 역(또는 모르는 ID)은 오류 없이 UNKNOWN을 반환합니다.
-    """
-    updated_at = _mock_updated_at()
-    raw = ELEVATORS.get(station_id)
-    if not raw:
-        return ElevatorStatusOutput(
-            station_id=station_id, station_name=station_name(station_id),
-            overall_status="UNKNOWN", updated_at=updated_at,
-            freshness_minutes=_MOCK_FRESHNESS_MIN, segments=[],
-        )
-
-    segments = [ElevatorSegment(**e) for e in raw]
-    down = sum(1 for s in segments if s.status != "AVAILABLE")
-    if down == 0:
-        overall = "AVAILABLE"
-    elif down == len(segments):
-        overall = "UNAVAILABLE"
-    else:
-        overall = "PARTIAL"
-
-    return ElevatorStatusOutput(
-        station_id=station_id, station_name=station_name(station_id),
-        overall_status=overall, updated_at=updated_at,
-        freshness_minutes=_MOCK_FRESHNESS_MIN, segments=segments,
-    )
-
-
-# -----------------------------------------------------------------------------
-# 3. get_broken_elevators
-# -----------------------------------------------------------------------------
-def get_broken_elevators(line_id: Optional[str] = None) -> BrokenElevatorsOutput:
-    """고장 또는 점검 중인 엘리베이터가 있는 역 목록을 반환합니다.
-
-    정렬: 전체 고장(UNAVAILABLE) 먼저, 그다음 고장 구간 수가 많은 순.
-    """
-    outages: List[BrokenStationSummary] = []
-    for sid, elevs in ELEVATORS.items():
-        st = STATIONS.get(sid)
-        if not st or (line_id and line_id not in st["lines"]):
-            continue
-        broken = [e for e in elevs if e["status"] != "AVAILABLE"]
-        if not broken:
-            continue
-        outages.append(BrokenStationSummary(
-            station_id=sid, station_name=st["name"], line_ids=st["lines"],
-            broken_count=len(broken), total_count=len(elevs),
-            status="UNAVAILABLE" if len(broken) == len(elevs) else "PARTIAL",
-            details=broken,
-        ))
-
-    outages.sort(key=lambda o: (o.status != "UNAVAILABLE", -o.broken_count))
-    return BrokenElevatorsOutput(
-        line_id=line_id, count=len(outages),
-        updated_at=_mock_updated_at(), outages=outages,
-    )
-
-
-# -----------------------------------------------------------------------------
-# 4. plan_trip (경로 탐색 + 엘리베이터 우회 + 출발 시각 역산 통합)
-# -----------------------------------------------------------------------------
 def _find_line2_path(start_id: str, end_id: str) -> Optional[Tuple[List[str], int]]:
     """2호선 순환선에서 외선/내선 중 짧은 경로와 정거장 수. 순환선 밖 역이면 None."""
     if start_id not in LINE_2_LOOP or end_id not in LINE_2_LOOP:
@@ -173,10 +25,6 @@ def _find_line2_path(start_id: str, end_id: str) -> Optional[Tuple[List[str], in
     return [LINE_2_LOOP[(s - i) % n] for i in range(ccw + 1)], ccw
 
 
-def _is_blocked(station_id: str) -> bool:
-    return get_elevator_status(station_id).overall_status in ("PARTIAL", "UNAVAILABLE")
-
-
 def find_alternative(station_id: str, target_type: str = "end") -> Optional[DetourInfo]:
     """엘리베이터를 쓸 수 없는 역의 대체역을 찾습니다.
 
@@ -187,7 +35,7 @@ def find_alternative(station_id: str, target_type: str = "end") -> Optional[Deto
     """
     broken_name = station_name(station_id)
     entry = ALTERNATIVES.get(station_id)
-    if entry and not _is_blocked(entry["alt_id"]):
+    if entry and not is_blocked(entry["alt_id"]):
         alt_id = entry["alt_id"]
         return DetourInfo(
             target_type=target_type, broken_station_id=station_id,
@@ -202,7 +50,7 @@ def find_alternative(station_id: str, target_type: str = "end") -> Optional[Deto
         n = len(LINE_2_LOOP)
         idx = LINE_2_LOOP.index(station_id)
         for neighbor in (LINE_2_LOOP[(idx + 1) % n], LINE_2_LOOP[(idx - 1) % n]):
-            if not _is_blocked(neighbor):
+            if not is_blocked(neighbor):
                 alt_name = station_name(neighbor)
                 return DetourInfo(
                     target_type=target_type, broken_station_id=station_id,

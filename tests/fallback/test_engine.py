@@ -2,7 +2,7 @@
 
 import pytest
 
-from AI.src.fallback_engine import FallbackEngine as F
+from AI.src.fallback import FallbackEngine as F
 
 
 @pytest.mark.parametrize("text, expected", [

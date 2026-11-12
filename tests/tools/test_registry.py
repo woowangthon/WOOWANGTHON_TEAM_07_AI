@@ -1,6 +1,6 @@
-"""LLM 도구 정의(TOOL_SPECS)와 실행기(execute_tool) 테스트."""
+"""LLM 도구 정의(TOOL_SPECS)와 실행기(execute_tool) 테스트 (src/tools/registry.py)."""
 
-from AI.src.tool_registry import TOOL_NAMES, TOOL_SPECS, execute_tool
+from AI.src.tools.registry import TOOL_NAMES, TOOL_SPECS, execute_tool
 
 
 def test_tool_specs_cover_four_tools():

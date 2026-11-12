@@ -5,7 +5,7 @@ FE/Prototype-v2/js/mock-data.js의 1~8호선 체계를 기반으로 구성했습
 
 규칙:
     - 다른 데이터(LINE_2_LOOP, ALIASES, ELEVATORS, ALTERNATIVES)에 나오는 역 ID는
-      반드시 STATIONS에 등록합니다. (tests/test_mock_data.py가 검사)
+      반드시 STATIONS에 등록합니다. (tests/data/test_mock_data.py가 검사)
     - 역명(name)에는 '역'을 붙이지 않습니다. 안내 문장은 f"{name}역"으로 만듭니다.
 """
 

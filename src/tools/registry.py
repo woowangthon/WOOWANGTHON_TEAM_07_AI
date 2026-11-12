@@ -3,7 +3,7 @@
 도구 스키마를 손으로 따로 쓰지 않고 models.py의 *Input 모델에서 생성합니다.
 LLM 클라이언트(오케스트레이터, scripts/llm_demo.py)는 이 모듈만 쓰면 됩니다.
 
-    from AI.src.tool_registry import TOOL_SPECS, execute_tool
+    from AI.src.tools.registry import TOOL_SPECS, execute_tool
 
     client.chat.completions.create(..., tools=TOOL_SPECS)
     result = execute_tool(tool_call.function.name, json.loads(tool_call.function.arguments))
@@ -13,10 +13,12 @@ from typing import Any, Dict, List, Type
 
 from pydantic import BaseModel, ValidationError
 
-from .models import (
+from ..models import (
     BrokenElevatorsInput, ElevatorStatusInput, PlanTripInput, ResolveStationInput,
 )
-from .tools import get_broken_elevators, get_elevator_status, plan_trip, resolve_station
+from .elevator import get_broken_elevators, get_elevator_status
+from .station import resolve_station
+from .trip import plan_trip
 
 # 이름 → (입력 모델, 구현 함수, LLM에 보여줄 설명)
 _TOOLS: Dict[str, tuple] = {

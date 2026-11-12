@@ -3,7 +3,7 @@
 > 이 문서는 **현재 코드가 실제로 어떻게 동작하는지**를 정리한다. 목표 설계는 [`AI_DEVELOPMENT_SPEC.md`](./AI_DEVELOPMENT_SPEC.md)에 있다.
 > 코드 동작을 바꾸면 이 문서의 해당 절도 같이 고친다.
 >
-> 최종 갱신: 2026-11-12 · 단위 테스트 68건 통과
+> 최종 갱신: 2026-11-13 · 단위 테스트 68건 통과
 
 ---
 
@@ -12,10 +12,10 @@
 | 구성 요소 | 명세 | 상태 | 파일 |
 |---|---|---|---|
 | 도구 4종 입출력 스키마 | §3 | ✅ | `src/models.py` |
-| 도구 4종 로직 | §3 | ✅ Mock 데이터 기반 | `src/tools.py`, `src/mock_data.py` |
-| LLM용 도구 정의 + 실행기 | §3 | ✅ | `src/tool_registry.py` |
-| 시스템 프롬프트 | §5.1 | ✅ 템플릿 | `src/prompts.py` |
-| 규칙 기반 폴백 엔진 | §6.2 | ✅ | `src/fallback_engine.py` |
+| 도구 4종 로직 | §3 | ✅ Mock 데이터 기반 | `src/tools/station.py`, `elevator.py`, `trip.py`, `src/data/mock_data.py` |
+| LLM용 도구 정의 + 실행기 | §3 | ✅ | `src/tools/registry.py` |
+| 시스템 프롬프트 | §5.1 | ✅ 템플릿 | `src/llm/prompts.py` |
+| 규칙 기반 폴백 엔진 | §6.2 | ✅ | `src/fallback/engine.py` |
 | 환경 설정 (`.env` 자동 로딩) | — | ✅ | `src/config.py` |
 | LLM 게이트웨이 왕복 데모 | §9 Phase 2 | ✅ 실험용 | `scripts/llm_demo.py` |
 | `/api/chat` 요청/응답 모델 | §4 | ✅ 스키마만 | `src/models.py` |
@@ -30,7 +30,7 @@
 
 ## 2. 도구별 실제 동작
 
-LLM은 `tool_registry.execute_tool(name, args)`로 도구를 실행한다. 인자를 `*Input` 모델로 검증하고, 실패하거나 도구가 `ValueError`를 내면 예외 대신 `{"error": "..."}`를 돌려준다.
+LLM은 `tools.registry.execute_tool(name, args)`로 도구를 실행한다. 인자를 `*Input` 모델로 검증하고, 실패하거나 도구가 `ValueError`를 내면 예외 대신 `{"error": "..."}`를 돌려준다.
 
 ### 2.1 `resolve_station(query)`
 
@@ -179,6 +179,24 @@ LLM은 `tool_registry.execute_tool(name, args)`로 도구를 실행한다. 인�
 ---
 
 ## 6. 변경 이력
+
+### 2026-11-13 — 디렉토리 구조 정리 (동작 변경 없음)
+
+`src/`의 평평한 모듈 8개를 역할별 하위 패키지로 나누고, 테스트도 같은 구조로 옮겼다. 아래 이력의 옛 경로는 당시 기준이다.
+
+| 이전 | 이후 |
+|---|---|
+| `src/mock_data.py` | `src/data/mock_data.py` |
+| `src/tools.py` | `src/tools/station.py`, `elevator.py`, `trip.py`, `common.py`로 분리 |
+| `src/tool_registry.py` | `src/tools/registry.py` |
+| `src/prompts.py` | `src/llm/prompts.py` |
+| `src/fallback_engine.py` | `src/fallback/engine.py` |
+| `tests/test_tools.py` | `tests/tools/test_station.py`, `test_elevator.py`, `test_trip.py`로 분리 |
+| `tests/test_tool_registry.py` | `tests/tools/test_registry.py` |
+| `tests/test_fallback.py` | `tests/fallback/test_engine.py` |
+| `tests/test_mock_data.py` | `tests/data/test_mock_data.py` |
+
+공개 import 경로: `from AI.src.tools import plan_trip`(도구), `from AI.src.tools.registry import TOOL_SPECS`, `from AI.src.fallback import FallbackEngine`, `from AI.src.llm.prompts import build_system_prompt`. `from AI.src import ...`도 그대로 동작한다.
 
 ### 2026-11-12 — 버그 수정 및 구조 정리
 

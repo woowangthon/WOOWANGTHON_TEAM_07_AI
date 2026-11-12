@@ -330,7 +330,7 @@ Content-Type: application/json
 ## 5. 프롬프트 및 컨텍스트 엔지니어링
 
 ### 5.1 시스템 프롬프트 명세
-> 실제 코드: `src/prompts.py`의 `SYSTEM_PROMPT_TEMPLATE`. 문구를 바꿀 때는 코드와 이 절을 함께 고친다.
+> 실제 코드: `src/llm/prompts.py`의 `SYSTEM_PROMPT_TEMPLATE`. 문구를 바꿀 때는 코드와 이 절을 함께 고친다.
 
 ```text
 당신은 수도권 지하철 교통약자(휠체어, 유모차 이용자 등)를 위한 AI 이동 안내 비서 '우왕이'입니다.
@@ -376,7 +376,7 @@ LLM이 생성한 `text`에 대해 백엔드가 2차 필터링을 수행한다:
    - 불일치 발생(예: 도구 결과는 14:48 출발인데 텍스트는 14:30 출발이라고 씀) 시, LLM 텍스트를 폐기하고 도구 결과 기반의 안전한 표준 템플릿 문장으로 치환한다.
 
 ### 6.2 규칙 기반 폴백 엔진 (Rule-based Fallback)
-- 프로토타입 `FE/Prototype-v2/js/ai-agent.js`의 의도 판별 및 정규식 로직을 Python `FallbackEngine` 클래스(`src/fallback_engine.py`)로 포팅. 의도 분류 점수표와 시각 파싱 규칙은 [`IMPLEMENTATION_STATUS.md` §3](./IMPLEMENTATION_STATUS.md#3-폴백-엔진-fallbackengineprocess) 참고.
+- 프로토타입 `FE/Prototype-v2/js/ai-agent.js`의 의도 판별 및 정규식 로직을 Python `FallbackEngine` 클래스(`src/fallback/engine.py`)로 포팅. 의도 분류 점수표와 시각 파싱 규칙은 [`IMPLEMENTATION_STATUS.md` §3](./IMPLEMENTATION_STATUS.md#3-폴백-엔진-fallbackengineprocess) 참고.
 - LLM API 타임아웃(2.5초), Rate Limit(429), Network Error 발생 시 즉시 `FallbackEngine.process()`를 호출하여 동일한 스키마(`ChatResponse`, `metadata.engine="fallback"`)의 응답을 반환한다.
 
 ---

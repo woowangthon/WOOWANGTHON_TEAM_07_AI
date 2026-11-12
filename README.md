@@ -27,12 +27,12 @@
 [ 사용자 질의 ]
        ↓
 [ AI 오케스트레이터 (FastAPI) ]                       ← 미구현 (Phase 2)
-  ├── 1. 세션 슬롯 주입 + LLM 도구 호출 (의도 분석, 슬롯 추출)   src/prompts.py, src/tool_registry.py
-  ├── 2. 도구 실행 (역명 정규화, 엘리베이터 상태, 경로/시간 계산)  src/tools.py
+  ├── 1. 세션 슬롯 주입 + LLM 도구 호출 (의도 분석, 슬롯 추출)   src/llm/, src/tools/registry.py
+  ├── 2. 도구 실행 (역명 정규화, 엘리베이터 상태, 경로/시간 계산)  src/tools/
   ├── 3. 액션 데이터 백엔드 직접 조립 (UI 렌더링용)
   ├── 4. LLM이 도구 결과로 안내 문장 생성
   ├── 5. 후처리 검증 (환각 감지 시 템플릿 문장으로 대체)          ← 미구현 (Phase 3)
-  └── [장애/타임아웃 시] 규칙 기반 폴백 엔진                      src/fallback_engine.py
+  └── [장애/타임아웃 시] 규칙 기반 폴백 엔진                      src/fallback/
        ↓
 [ 프론트엔드 모바일 웹 챗봇 렌더링 ]
 ```
@@ -44,19 +44,26 @@
 ```text
 AI/
 ├── AGENTS.md / CLAUDE.md / GEMINI.md   # 에이전트 가이드 (CLAUDE·GEMINI는 AGENTS를 불러옴)
-├── src/                                # AI.src 패키지
-│   ├── models.py          # Pydantic 스키마: 도구 입출력 + /api/chat 요청/응답
-│   ├── tools.py           # 도구 4종: resolve_station, get_elevator_status, get_broken_elevators, plan_trip
-│   ├── tool_registry.py   # LLM용 도구 정의(TOOL_SPECS) 자동 생성 + 실행기(execute_tool)
-│   ├── prompts.py         # 시스템 프롬프트 템플릿
-│   ├── fallback_engine.py # LLM 장애 시 규칙 기반 응답 엔진
-│   ├── mock_data.py       # 역·별칭·엘리베이터·대체역·시간 상수 Mock 데이터
-│   └── config.py          # 게이트웨이·타임아웃 설정, AI/.env 자동 로딩
+├── src/                     # AI.src 패키지
+│   ├── config.py            # 게이트웨이·타임아웃 설정, AI/.env 자동 로딩
+│   ├── models.py            # Pydantic 스키마: 도구 입출력 + /api/chat 요청/응답 (FE/BE 계약)
+│   ├── data/
+│   │   └── mock_data.py     # 역·별칭·엘리베이터·대체역·시간 상수 Mock 데이터
+│   ├── tools/               # Function Calling 도구
+│   │   ├── station.py       # resolve_station — 역 이름 정규화, 서비스 범위 판정
+│   │   ├── elevator.py      # get_elevator_status, get_broken_elevators
+│   │   ├── trip.py          # plan_trip — 경로 + 고장 우회 + 출발 시각 역산
+│   │   ├── registry.py      # LLM용 도구 정의(TOOL_SPECS) 자동 생성 + 실행기(execute_tool)
+│   │   └── common.py        # 시각 파싱 등 공용 유틸
+│   ├── llm/
+│   │   └── prompts.py       # 시스템 프롬프트 템플릿 (오케스트레이터도 이 패키지에 추가 예정)
+│   └── fallback/
+│       └── engine.py        # LLM 장애 시 규칙 기반 응답 엔진
 ├── scripts/
-│   └── llm_demo.py        # LLM 게이트웨이 도구 호출 왕복 데모 (FactChat / NVIDIA)
-├── tests/                 # pytest 단위 테스트
-├── docs/                  # 명세, 구현 현황, 설계 검토
-├── .env.example           # 환경 변수 템플릿
+│   └── llm_demo.py          # LLM 게이트웨이 도구 호출 왕복 데모 (FactChat / NVIDIA)
+├── tests/                   # pytest 단위 테스트 (src/와 같은 구조: data/, tools/, fallback/)
+├── docs/                    # 명세, 구현 현황, 설계 검토
+├── .env.example             # 환경 변수 템플릿
 ├── requirements.txt
 └── conftest.py / pytest.ini
 ```

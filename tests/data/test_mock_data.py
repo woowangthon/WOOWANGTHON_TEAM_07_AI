@@ -1,6 +1,6 @@
 """Mock 데이터 무결성 테스트. 데이터를 고칠 때 깨진 참조를 바로 잡아냅니다."""
 
-from AI.src.mock_data import (
+from AI.src.data.mock_data import (
     ALIASES, ALTERNATIVES, ELEVATORS, LINE_2_LOOP, LINES, STATIONS,
 )
 

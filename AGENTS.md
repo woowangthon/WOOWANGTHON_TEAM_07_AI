@@ -24,7 +24,7 @@ LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도�
 
 이 서비스에서 틀린 정보는 휠체어 이용자가 열차를 놓치거나 고장 난 역에 갇히는 결과로 이어진다.
 
-1. **LLM은 해석만, 계산은 도구가.** 경로·시간·엘리베이터 상태를 LLM 출력이나 프롬프트로 만들지 않는다. 새 계산이 필요하면 `src/tools.py`에 도구 로직으로 넣는다.
+1. **LLM은 해석만, 계산은 도구가.** 경로·시간·엘리베이터 상태를 LLM 출력이나 프롬프트로 만들지 않는다. 새 계산이 필요하면 `src/tools/`에 도구 로직으로 넣는다.
 2. **액션 데이터(`actions`, 카드)는 백엔드 코드가 도구 결과로 직접 조립한다.** LLM이 JSON을 쓰게 하지 않는다.
 3. **모르면 모른다고 한다.** 역을 못 찾거나 지원 범위 밖이면 기본 역으로 대신 답하지 말고 되묻거나 거절한다. 계산할 수 없는 구간은 `is_possible=False`로 돌려준다.
 4. **시간은 보수적으로.** 대기 시간은 평균(배차/2)이 아니라 배차 간격 + 안전 여유로 잡는다.
@@ -47,16 +47,18 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 
 | 바꾸려는 것 | 파일 | 같이 고칠 것 |
 |---|---|---|
-| 도구 입출력 필드 | `src/models.py` | 명세 §3, `tests/test_tool_registry.py` |
-| 도구 계산 로직 | `src/tools.py` | `tests/test_tools.py`, IMPLEMENTATION_STATUS §2 |
-| 역·별칭·엘리베이터·대체역·시간 상수 | `src/mock_data.py` | `tests/test_mock_data.py`가 참조 무결성 검사 |
-| LLM에 보이는 도구 설명 | `src/tool_registry.py` (`_TOOLS`) | 파라미터 스키마는 `models.py`에서 자동 생성되므로 손으로 쓰지 않는다 |
-| 시스템 프롬프트 | `src/prompts.py` | 명세 §5.1 (같은 문구 유지) |
-| 폴백 의도 분류·문장 | `src/fallback_engine.py` | `tests/test_fallback.py`, IMPLEMENTATION_STATUS §3 |
+| 도구 입출력 필드 | `src/models.py` | 명세 §3, `tests/tools/test_registry.py` |
+| 역 이름 정규화 | `src/tools/station.py` | `tests/tools/test_station.py`, IMPLEMENTATION_STATUS §2.1 |
+| 엘리베이터 상태·고장 목록 | `src/tools/elevator.py` | `tests/tools/test_elevator.py`, IMPLEMENTATION_STATUS §2.2–2.3 |
+| 경로·시간·대체역 계산 | `src/tools/trip.py` | `tests/tools/test_trip.py`, IMPLEMENTATION_STATUS §2.4 |
+| 역·별칭·엘리베이터·대체역·시간 상수 | `src/data/mock_data.py` | `tests/data/test_mock_data.py`가 참조 무결성 검사 |
+| LLM에 보이는 도구 설명 | `src/tools/registry.py` (`_TOOLS`) | 파라미터 스키마는 `models.py`에서 자동 생성되므로 손으로 쓰지 않는다 |
+| 시스템 프롬프트 | `src/llm/prompts.py` | 명세 §5.1 (같은 문구 유지) |
+| 폴백 의도 분류·문장 | `src/fallback/engine.py` | `tests/fallback/test_engine.py`, IMPLEMENTATION_STATUS §3 |
 | 게이트웨이·타임아웃 설정 | `src/config.py`, `.env.example` | — |
 | 실험용 실행 스크립트 | `scripts/` | — |
 
-다음에 만들 것(Phase 2): FastAPI `/api/chat` 오케스트레이터. `tool_registry.TOOL_SPECS`/`execute_tool`, `prompts.build_system_prompt`, `config.settings.LLM_TIMEOUT_SECONDS`, `FallbackEngine.process`를 조합하면 된다. 흐름은 명세 §2 시퀀스 다이어그램을 따른다.
+다음에 만들 것(Phase 2): FastAPI `/api/chat` 오케스트레이터 (`src/llm/`에 추가). `tools.registry.TOOL_SPECS`/`execute_tool`, `llm.prompts.build_system_prompt`, `config.settings.LLM_TIMEOUT_SECONDS`, `FallbackEngine.process`를 조합하면 된다. 흐름은 명세 §2 시퀀스 다이어그램을 따른다.
 
 ## 6. 작업 규칙
 
@@ -65,6 +67,7 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 - Mock 데이터 규칙: 어디서든 참조하는 역 ID는 `STATIONS`에 등록한다. 역명(`name`)에는 `역`을 붙이지 않는다(문장에서 `f"{name}역"`).
 - `src/` 모듈은 import할 때 네트워크 호출·출력 같은 부작용이 없어야 한다. 실행 스크립트는 `scripts/`에 두고 `if __name__ == "__main__":`으로 감싼다.
 - import는 `AI.src.*` 절대 경로(테스트·스크립트) 또는 패키지 내부 상대 경로(`from .tools import ...`)를 쓴다. 레포 폴더 이름은 반드시 `AI`여야 한다.
+- 파일 배치: `src/`는 역할별 하위 패키지(`data/`, `tools/`, `llm/`, `fallback/`)로 나눈다. 여러 계층이 함께 쓰는 `config.py`, `models.py`만 `src/` 바로 아래에 둔다. 테스트는 `tests/` 아래에 `src/`와 같은 구조로 두고, 테스트 파일 이름은 프로젝트 전체에서 겹치지 않게 한다(`tests/`에 `__init__.py`가 없어 이름이 같으면 충돌함).
 - 파일명: Python 모듈은 `snake_case.py`. `scripts/`에 `test_*.py`나 `*_test.py` 이름을 쓰지 않는다(pytest가 수집함).
 - 인코딩: 모든 텍스트 파일은 **UTF-8**. UTF-16으로 저장하면 git이 바이너리로 취급한다.
 - 문서·주석·안내 문장은 한국어. 새 문서는 `docs/`에 만들고 레포 루트에 흩어 놓지 않는다.

@@ -1,7 +1,7 @@
 """AI 파트 데이터 모델 및 도구(Function Calling) 입출력 스키마.
 
 명세: AI/docs/AI_DEVELOPMENT_SPEC.md §3(도구), §4(/api/chat).
-*Input 모델은 LLM에 노출되는 도구 파라미터 스키마의 원본입니다 (src/tool_registry.py가 변환).
+*Input 모델은 LLM에 노출되는 도구 파라미터 스키마의 원본입니다 (src/tools/registry.py가 변환).
 """
 
 from datetime import datetime

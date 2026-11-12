@@ -9,11 +9,11 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from .mock_data import (
+from ..data.mock_data import (
     ALIASES, NAMES_REQUIRING_SUFFIX, OUT_OF_COVERAGE_KEYWORDS, STATIONS, station_name,
 )
-from .models import ActionPayload, ChatResponse, ChatResponseMetadata, ToolCallRecord
-from .tools import get_broken_elevators, get_elevator_status, parse_hhmm, plan_trip
+from ..models import ActionPayload, ChatResponse, ChatResponseMetadata, ToolCallRecord
+from ..tools import get_broken_elevators, get_elevator_status, parse_hhmm, plan_trip
 
 # 문장에서 역 이름을 찾을 때 쓰는 사전: (표기, 역 ID). 긴 표기부터 매칭합니다.
 _STATION_VOCAB: List[Tuple[str, str]] = sorted(

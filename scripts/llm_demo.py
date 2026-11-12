@@ -3,7 +3,7 @@
 모델이 도구를 제대로 고르고, 도구 결과로 안내 문장을 만드는지 터미널에서 확인합니다.
 오케스트레이터(/api/chat)가 아니며 세션 메모리, 환각 검증, 폴백 전환은 하지 않습니다.
 
-흐름: 시스템 프롬프트 + 질문 → 모델이 도구 호출 → tool_registry로 실제 실행 → 결과를 대화에 추가
+흐름: 시스템 프롬프트 + 질문 → 모델이 도구 호출 → tools.registry로 실제 실행 → 결과를 대화에 추가
       → 모델이 더 이상 도구를 부르지 않을 때까지 반복(최대 MAX_ROUNDS) → 최종 답변 출력
 
 실행 (어느 폴더에서든 가능, API 키는 AI/.env 또는 환경 변수):
@@ -28,8 +28,8 @@ if hasattr(sys.stdout, "reconfigure"):
 from openai import OpenAI  # noqa: E402
 
 from AI.src.config import settings  # noqa: E402
-from AI.src.prompts import build_system_prompt  # noqa: E402
-from AI.src.tool_registry import TOOL_SPECS, execute_tool  # noqa: E402
+from AI.src.llm.prompts import build_system_prompt  # noqa: E402
+from AI.src.tools.registry import TOOL_SPECS, execute_tool  # noqa: E402
 
 MAX_ROUNDS = 4
 DEFAULT_QUESTION = "강남역 지금 휠체어로 엘리베이터 탈 수 있어?"
