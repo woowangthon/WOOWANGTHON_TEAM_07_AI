@@ -169,6 +169,13 @@ class ChatResponseMetadata(BaseModel):
     engine: Literal["llm", "fallback"] = "llm"
     latency_ms: int = 0
     fallback_used: bool = False
+    fallback_reason: Optional[str] = Field(
+        None, description="폴백 전환 사유 (timeout | rate_limit | network | server_error | api_error | "
+                          "not_configured | empty_reply | max_rounds | internal_error). LLM 응답이면 None"
+    )
+    guard_triggered: bool = Field(
+        False, description="LLM 문장이 후처리 검증에 걸려 도구 결과 기반 템플릿 문장으로 바뀌었는지"
+    )
     data_updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
 
 

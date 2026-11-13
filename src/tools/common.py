@@ -1,17 +1,10 @@
-"""도구 공용 유틸리티: 시각 파싱, Mock 데이터 기준 시각."""
+"""도구 공용 유틸리티: 시각 파싱.
+
+데이터 기준 시각은 데이터 소스가 정합니다 (DataSource.data_updated_at).
+"""
 
 import re
-from datetime import datetime, timedelta
-from typing import Optional, Tuple
-
-# Mock 데이터의 기준 시각은 '현재 − 5분'으로 고정합니다.
-MOCK_FRESHNESS_MIN = 5
-
-
-def mock_updated_at(now: Optional[datetime] = None) -> str:
-    """Mock 데이터 기준 시각 (ISO-8601, KST)."""
-    base = now or datetime.now()
-    return (base - timedelta(minutes=MOCK_FRESHNESS_MIN)).strftime("%Y-%m-%dT%H:%M:00+09:00")
+from typing import Tuple
 
 
 def parse_hhmm(value: str, field: str = "time") -> Tuple[int, int]:

@@ -1,0 +1,117 @@
+"""데이터 소스 인터페이스.
+
+도구(src/tools/)와 폴백 엔진은 Mock 데이터 모듈을 직접 읽지 않고 이 인터페이스를 거칩니다.
+지금은 MockDataSource 하나뿐이고, BE API 연동(이슈 #4~#6) 때 BE 구현을 추가합니다.
+
+    from AI.src.data.source import get_data_source
+    src = get_data_source()
+    src.station("gangnam")
+
+구현 선택: 환경 변수 AI_DATA_SOURCE (기본 "mock").
+테스트에서는 use_data_source(가짜_구현)으로 잠깐 바꿔 끼울 수 있습니다.
+
+계산 위치:
+    - 역·엘리베이터·대체역 후보·경로처럼 "데이터에서 찾는 것"은 데이터 소스가 맡습니다.
+      (BE 연동 후에는 BE API가 계산한 결과를 돌려줍니다.)
+    - 상태 판정(PARTIAL 등), 출발 시각 역산, 안내 문장 조립은 도구가 맡습니다.
+"""
+
+import os
+from contextlib import contextmanager
+from datetime import datetime
+from typing import Dict, Iterator, List, Optional, Protocol, Tuple
+
+
+class DataSource(Protocol):
+    """도구와 폴백 엔진이 쓰는 데이터 조회 인터페이스.
+
+    역 dict 형식: {"id": str, "name": str ('역' 없음), "lines": ["2", ...]}
+    엘리베이터 dict 형식: ElevatorSegment 필드와 같음
+        {"segment_id", "type", "location", "floors", "status", "reason"}
+    """
+
+    # --- 역 ---
+    def stations(self) -> Dict[str, dict]:
+        """지원 역 전체 (키: 역 ID)."""
+
+    def station(self, station_id: str) -> Optional[dict]:
+        """역 하나. 없으면 None."""
+
+    def aliases(self) -> Dict[str, str]:
+        """별칭('역'을 뗀 형태) → 역 ID."""
+
+    def names_requiring_suffix(self) -> List[str]:
+        """문장에서 뒤에 '역'이 붙어야 역으로 인정하는 이름 (예: 서울, 이대)."""
+
+    def out_of_coverage_keywords(self) -> List[str]:
+        """서비스 범위 밖 역·노선·지역 키워드."""
+
+    # --- 엘리베이터 ---
+    def elevators(self, station_id: str) -> Optional[List[dict]]:
+        """역의 엘리베이터 구간 목록. 데이터가 없으면 None."""
+
+    def all_elevators(self) -> Dict[str, List[dict]]:
+        """엘리베이터 데이터가 있는 모든 역 (키: 역 ID). 전체 운행 상태 조회용."""
+
+    def data_updated_at(self, now: Optional[datetime] = None) -> Tuple[str, int]:
+        """엘리베이터 데이터 기준 시각(ISO-8601 KST)과 경과 분."""
+
+    # --- 대체역·경로 ---
+    def registered_alternative(self, station_id: str) -> Optional[dict]:
+        """고장 역에 등록된 대체역 안내 {"alt_id", "distance_m", "walk_min", "tip"}. 없으면 None."""
+
+    def neighbor_stations(self, station_id: str) -> List[str]:
+        """인접 역 ID 목록 (가까운 순). 대체역 후보 탐색용."""
+
+    def find_route(self, start_id: str, end_id: str) -> Optional[Tuple[List[str], int, str]]:
+        """(경로 역 ID 목록, 정거장 수, 노선 ID). 계산할 수 없는 구간이면 None."""
+
+    def timing(self) -> Dict[str, int]:
+        """시간 계산 상수 (분). 키는 mock_data.TIMING_PARAMS와 같음."""
+
+    def detour_defaults(self) -> Tuple[int, int]:
+        """대체역 거리 정보가 없을 때 쓰는 (거리 m, 도보 분)."""
+
+
+def _create(name: str) -> DataSource:
+    if name == "mock":
+        from .mock_source import MockDataSource
+        return MockDataSource()
+    raise ValueError(f"알 수 없는 데이터 소스입니다: {name!r} (현재 지원: mock)")
+
+
+_current: Optional[DataSource] = None
+
+
+def get_data_source() -> DataSource:
+    """현재 데이터 소스. 처음 호출할 때 AI_DATA_SOURCE(기본 mock)로 만듭니다."""
+    global _current
+    if _current is None:
+        _current = _create(os.getenv("AI_DATA_SOURCE", "mock").strip().lower() or "mock")
+    return _current
+
+
+def set_data_source(source: Optional[DataSource]) -> None:
+    """데이터 소스를 바꿉니다. None이면 다음 호출 때 환경 변수 기준으로 다시 만듭니다."""
+    global _current
+    _current = source
+
+
+@contextmanager
+def use_data_source(source: DataSource) -> Iterator[DataSource]:
+    """with 블록 안에서만 데이터 소스를 바꿉니다 (테스트용)."""
+    global _current
+    previous = _current
+    _current = source
+    try:
+        yield source
+    finally:
+        _current = previous
+
+
+def station_name(station_id: Optional[str]) -> str:
+    """역 ID의 표준 역명. 모르는 ID면 ID를 그대로 반환합니다."""
+    if not station_id:
+        return ""
+    st = get_data_source().station(station_id)
+    return st["name"] if st else station_id

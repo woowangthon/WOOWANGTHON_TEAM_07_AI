@@ -3,7 +3,7 @@
 > 이 문서는 **현재 코드가 실제로 어떻게 동작하는지**를 정리한다. 목표 설계는 [`AI_DEVELOPMENT_SPEC.md`](./AI_DEVELOPMENT_SPEC.md)에 있다.
 > 코드 동작을 바꾸면 이 문서의 해당 절도 같이 고친다.
 >
-> 최종 갱신: 2026-11-13 · 단위 테스트 68건 통과
+> 최종 갱신: 2026-11-13 · 단위 테스트 105건 통과
 
 ---
 
@@ -18,11 +18,13 @@
 | 규칙 기반 폴백 엔진 | §6.2 | ✅ | `src/fallback/engine.py` |
 | 환경 설정 (`.env` 자동 로딩) | — | ✅ | `src/config.py` |
 | LLM 게이트웨이 왕복 데모 | §9 Phase 2 | ✅ 실험용 | `scripts/llm_demo.py` |
-| `/api/chat` 요청/응답 모델 | §4 | ✅ 스키마만 | `src/models.py` |
-| FastAPI `/api/chat` 엔드포인트 (오케스트레이터) | §4 | ⏳ 미구현 | — |
-| 세션 슬롯 메모리 (TTL 30분) | §5.2 | ⏳ 미구현 (`SessionContext` 모델 없음) | — |
-| 타임아웃 → 폴백 전환 | §6.2 | ⏳ 미구현 (설정값만 있음) | — |
-| 후처리 환각 검증기 (Guard) | §6.1 | ⏳ 미구현 | — |
+| `/api/chat` 요청/응답 모델 | §4 | ✅ | `src/models.py` |
+| 데이터 소스 인터페이스 (Mock/BE 교체) | — | ✅ Mock 구현만 | `src/data/source.py`, `mock_source.py` |
+| FastAPI `/api/chat` 엔드포인트 (오케스트레이터) | §4 | ✅ 가짜 LLM·폴백 경로로 검증. 실제 게이트웨이 왕복은 미확인 | `src/api/app.py`, `src/llm/orchestrator.py`, `client.py` |
+| 액션·카드 조립 (도구 결과 기반) | §4 | ✅ | `src/llm/response_builder.py` |
+| 세션 슬롯 메모리 (TTL 30분) | §5.2 | ✅ 인메모리 | `src/llm/session.py` |
+| LLM 장애 → 폴백 전환 | §6.2 | ✅ | `src/llm/orchestrator.py` |
+| 후처리 환각 검증기 (Guard) | §6.1 | ✅ 역명·시각만 | `src/llm/guard.py` |
 | 50문항 벤치마크 | §8 | ⏳ 미구현 | — |
 | 백엔드 실데이터·그래프 연동 | §7 | ⏳ 원본 4종 분석 완료, 4종(경로·시간표·빠른하차 등) BE 수집 예정, 연동 전 ([DATA_SPEC](./DATA_SPEC.md)) | `data/` |
 
@@ -30,7 +32,9 @@
 
 ## 2. 도구별 실제 동작
 
-LLM은 `tools.registry.execute_tool(name, args)`로 도구를 실행한다. 인자를 `*Input` 모델로 검증하고, 실패하거나 도구가 `ValueError`를 내면 예외 대신 `{"error": "..."}`를 돌려준다.
+LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행한다. 인자를 `*Input` 모델로 검증하고, 실패하거나 도구가 `ValueError`를 내면 예외 대신 `{"error": "..."}`를 돌려준다. `now`는 `plan_trip`에만 전달되며 오케스트레이터가 요청의 `current_time`으로 채운다.
+
+도구와 폴백 엔진은 `mock_data.py`를 직접 읽지 않고 데이터 소스 인터페이스(`data.get_data_source()`)를 거친다 (§4.6). 아래 동작은 기본 데이터 소스인 `MockDataSource` 기준이다.
 
 ### 2.1 `resolve_station(query)`
 
@@ -155,11 +159,86 @@ LLM은 `tools.registry.execute_tool(name, args)`로 도구를 실행한다. 인�
 
 ---
 
-## 4. 명세와 현재 구현의 차이
+## 4. 오케스트레이터 (`POST /api/chat`)
+
+### 4.1 처리 흐름 (`ChatOrchestrator.handle`)
+
+1. `session_id`로 세션 슬롯을 꺼내 시스템 프롬프트(`build_system_prompt`)에 최근 역·최근 경로를 넣는다.
+2. LLM에 `TOOL_SPECS`와 함께 보낸다. 응답에 도구 호출이 있으면 `execute_tool`로 실행하고 결과를 `tool` 메시지로 붙여 다시 보낸다. 최대 `LLM_MAX_TOOL_ROUNDS`(기본 4)회.
+3. 도구 호출 없이 문장이 오면 끝. `card_type`·`actions`·`suggestions`는 도구 결과로 코드가 만든다 (§4.2).
+4. 후처리 검증(§4.5)에 걸리면 LLM 문장을 버리고 도구 결과로 만든 템플릿 문장을 쓴다.
+5. 세션 슬롯을 갱신하고(§4.4) `metadata.latency_ms`를 기록한다.
+
+- 대화 원문은 저장하지 않는다. 요청마다 시스템 프롬프트 + 이번 사용자 문장으로 새로 시작한다.
+- `/api/chat`은 동기 함수이며 FastAPI 스레드 풀에서 실행된다. 명세의 `async/await`는 아직 쓰지 않는다.
+- 실행: `python scripts/run_server.py` (기본 포트 8001). LLM 키가 없으면 모든 요청이 폴백으로 답한다.
+
+### 4.2 카드·액션 조립 (`response_builder.build_response`)
+
+도구 결과에서 아래 순서로 처음 해당하는 것을 고른다. `card_type` 이름은 폴백 엔진(§3.4)과 같다. 오류 결과(`{"error"}`)는 건너뛴다.
+
+| 순서 | 근거 | card_type | 액션 |
+|---|---|---|---|
+| 1 | `plan_trip` (출발≠도착) | `trip_plan` / `trip_unsupported` | `openTime`, 대체역마다 `showAlternative` |
+| 2 | `get_elevator_status` | `elevator_status` | 같은 역 `plan_trip(sid, sid)`에 대체역이 있으면 `showAlternative`, 그리고 `openStation` |
+| 3 | `plan_trip` (출발=도착, 대체역만) | `elevator_status` | `showAlternative`, `openStation` |
+| 4 | `get_broken_elevators` | `outages_list` / `outages_empty` | 상위 3역 `openStation` |
+| 5 | `resolve_station` OUT_OF_COVERAGE | `out_of_coverage` | — |
+| 6 | `resolve_station` NOT_FOUND | `need_station` | — |
+| 7 | 도구 호출 없음 | `help` | — |
+
+`metadata.data_updated_at`은 고른 결과에 `updated_at`이 있으면 그 값, 없으면 응답 생성 시각이다.
+
+### 4.3 폴백 전환
+
+다음 경우 `FallbackEngine.process(message, session_id, current_time, 세션 슬롯)`의 응답을 그대로 돌려준다. `metadata.engine="fallback"`, `fallback_used=true`, `fallback_reason`에 사유를 넣는다.
+
+| fallback_reason | 조건 |
+|---|---|
+| `timeout` | 게이트웨이 호출 1회가 `LLM_TIMEOUT_SECONDS`(현재 3.0초)를 넘음. 재시도하지 않는다 |
+| `rate_limit` | HTTP 429 |
+| `network` | 연결 실패 |
+| `server_error` / `api_error` | HTTP 5xx / 그 밖의 API 오류 (인증 실패 포함) |
+| `not_configured` | LLM API 키 없음 |
+| `empty_reply` | 도구 호출도 문장도 없는 응답 |
+| `max_rounds` | 도구 왕복이 `LLM_MAX_TOOL_ROUNDS`를 넘음 |
+| `internal_error` | 도구 실행·응답 조립 중 예기치 못한 예외 |
+
+- 타임아웃은 **호출 1회 기준**이다. 도구 왕복이 여러 번이면 전체 응답 시간은 그보다 길어질 수 있다.
+
+### 4.4 세션 슬롯 (`session.py`)
+
+- `SessionContext`: `last_station_id`, `last_station_name`, `last_route`(`start_id`, `end_id`, `arrive_by`, 출발·도착 시각), `last_query_type`(= card_type), `updated_at`.
+- `SessionStore`: 인메모리. 마지막 저장 후 `SESSION_TTL_MINUTES`(30분)가 지나면 버린다. 저장할 때마다 만료 세션을 지우고, `max_sessions`(10,000)를 넘으면 오래된 것부터 버린다. 서버를 재시작하면 사라진다.
+- 최근 역 우선순위: 경로의 도착역 > 상태를 조회한 역 > 대체역을 찾은 역 > `resolve_station`으로 확인된 역. 데이터 소스에 없는 역 ID는 무시한다.
+- 폴백 응답도 `tool_calls` 인자로 같은 규칙을 적용해 갱신한다. 그래서 LLM이 실패한 다음 요청에서도 "거기"가 이어진다.
+
+### 4.5 후처리 검증 (`guard.check_text`)
+
+LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N시 반`, `N시`)을 뽑아, 이번 요청의 근거에 있는지 확인한다.
+
+- 근거: 도구 인자·결과의 모든 문자열(역 ID는 역명으로 바꿈), 사용자 문장, 기준 시각.
+- 역명: 근거의 역명 중 하나로 **끝나면** 통과 ("인접한강남역"처럼 앞말이 붙어 잡힌 경우). "대체역", "해당역" 같은 일반 표현과 "지역", "구역"처럼 '역'으로 끝나는 명사는 검사하지 않는다.
+- 시각: 근거 시각과 분이 같고 시가 12시간 차이 이내로 같으면 통과 ("3시" = 15:00).
+- 하나라도 걸리면 `metadata.guard_triggered=true`, 문장은 §4.2의 템플릿 문장으로 바꾼다. 카드·액션은 그대로다.
+- 검사하지 않는 것: '역' 없이 쓴 역명, 소요 시간·거리 숫자, 엘리베이터 위치 설명.
+
+### 4.6 데이터 소스 (`data/source.py`)
+
+- `DataSource` 인터페이스: 역 목록·역 하나·별칭·미지원 키워드, 역별 엘리베이터·전체 엘리베이터·기준 시각, 등록된 대체역·인접 역·경로, 시간 상수·대체역 기본 거리.
+- 구현 선택: 환경 변수 `AI_DATA_SOURCE` (현재 `mock`만 지원). 테스트는 `use_data_source(가짜)`로 바꿔 끼운다.
+- 상태 판정(`PARTIAL` 등), 출발 시각 역산, 안내 문장은 도구에 남아 있다. BE API 연동(이슈 #4~#6) 때 BE 구현을 추가하고, 경로·대체역은 BE 계산 결과를 받도록 바꾼다.
+
+---
+
+## 5. 명세와 현재 구현의 차이
 
 | 항목 | 명세 / 설계 검토 | 현재 구현 |
 |---|---|---|
-| LLM 타임아웃 | 2.5초 (명세 §1, §6.2) | `config.py` 기본값 3.0초 — **팀 확정 필요** |
+| LLM 타임아웃 | 2.5초 (명세 §1, §6.2) | `config.py` 기본값 3.0초, 호출 1회 기준 — **팀 확정 필요** |
+| 오케스트레이터 비동기 처리 | `async/await` (명세 §9 Phase 2) | 동기 함수 + FastAPI 스레드 풀 |
+| 후처리 검증 대상 | 역명·시각 정규식 (명세 §6.1) | 같음. 추가로 `N시 반`, `N시` 형식과 오전/오후 12시간 차이 허용 (§4.5) |
+| `ChatResponseMetadata` | `engine`, `latency_ms`, `fallback_used`, `data_updated_at` | `fallback_reason`, `guard_triggered` 추가 (명세 §4.2 반영) |
 | 커버리지 판정 | 역 단위 목록 (설계 검토 §2.2) | `STATIONS` 등록 여부 + 키워드 블랙리스트 |
 | 엘리베이터 이용 가능 판정 | 이동 방향에 필요한 구간 기준 (설계 검토 §2.3) | 고장 구간 개수 기준 |
 | 고장 우회 | 출발·환승·도착, 그래프에서 고장 노드 제외 | 출발·도착만, 등록된 안내 또는 인접 역 |
@@ -170,15 +249,34 @@ LLM은 `tools.registry.execute_tool(name, args)`로 도구를 실행한다. 인�
 
 ---
 
-## 5. 남은 제약 (Mock 단계라 의도적으로 둔 것)
+## 6. 남은 제약 (Mock 단계라 의도적으로 둔 것)
 
 - 경로는 2호선 순환선만. 순환선 밖 역은 `is_possible=False`로 정직하게 거절한다.
 - 대체역 거리 정보가 없는 곳(방배, 신대방, 인접 역 자동 선택)은 기본값 800m / 10분.
 - 폴백의 역 추출은 띄어쓰기가 없는 문장("신도림에서강남역")에서 앞 역을 놓칠 수 있다. LLM 경로는 `resolve_station`이 역 이름만 받으므로 영향 없음.
+- 세션은 서버 프로세스 메모리에만 있다. 서버를 여러 대 띄우거나 재시작하면 이어지지 않는다.
+- 실제 LLM 게이트웨이(FactChat/NVIDIA)로 `/api/chat`을 왕복한 결과는 아직 확인하지 않았다 (테스트는 가짜 LLM 사용).
 
 ---
 
-## 6. 변경 이력
+## 7. 변경 이력
+
+### 2026-11-13 — `/api/chat` 오케스트레이터, 폴백 전환, 세션, 후처리 검증, 데이터 소스 분리 (이슈 #3, #7, #8, #9, #11)
+
+| 추가·변경 | 내용 |
+|---|---|
+| `src/data/source.py`, `mock_source.py` | 데이터 소스 인터페이스. 도구·폴백 엔진이 `mock_data.py` 대신 이를 거침. 동작 변화 없음 (기존 68건 그대로 통과) |
+| `src/llm/client.py` | OpenAI 호환 클라이언트. 실패를 `LLMUnavailableError(kind)`로 통일, 재시도 없음 |
+| `src/llm/orchestrator.py` | 도구 호출 루프, 폴백 전환, 후처리 검증, 세션 갱신, `latency_ms` |
+| `src/llm/response_builder.py` | 도구 결과로 card_type·actions·suggestions·템플릿 문장 조립 |
+| `src/llm/session.py` | `SessionContext`, TTL 인메모리 `SessionStore` |
+| `src/llm/guard.py` | 역명·시각 후처리 검증 |
+| `src/api/app.py`, `scripts/run_server.py` | FastAPI `POST /api/chat`, `GET /health` |
+| `src/tools/registry.py` | `execute_tool(..., now=)` — 요청의 `current_time`을 `plan_trip`에 전달 |
+| `src/models.py` | `ChatResponseMetadata.fallback_reason`, `guard_triggered` 추가 |
+| `src/config.py` | `LLM_PROVIDER`, `LLM_MAX_TOOL_ROUNDS` 추가. 환경 변수 `AI_DATA_SOURCE` |
+| `src/tools/common.py` | `mock_updated_at`, `MOCK_FRESHNESS_MIN` 제거 → `MockDataSource.data_updated_at` |
+| 테스트 | `tests/data/test_data_source.py`, `tests/llm/`, `tests/api/` 37건 추가 (총 105건) |
 
 ### 2026-11-13 — 디렉토리 구조 정리 (동작 변경 없음)
 

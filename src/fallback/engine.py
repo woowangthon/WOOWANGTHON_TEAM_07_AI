@@ -9,17 +9,18 @@ import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..data.mock_data import (
-    ALIASES, NAMES_REQUIRING_SUFFIX, OUT_OF_COVERAGE_KEYWORDS, STATIONS, station_name,
-)
+from ..data import get_data_source, station_name
 from ..models import ActionPayload, ChatResponse, ChatResponseMetadata, ToolCallRecord
 from ..tools import get_broken_elevators, get_elevator_status, parse_hhmm, plan_trip
 
-# 문장에서 역 이름을 찾을 때 쓰는 사전: (표기, 역 ID). 긴 표기부터 매칭합니다.
-_STATION_VOCAB: List[Tuple[str, str]] = sorted(
-    [(st["name"], sid) for sid, st in STATIONS.items()] + list(ALIASES.items()),
-    key=lambda x: -len(x[0]),
-)
+
+def _station_vocab() -> List[Tuple[str, str]]:
+    """문장에서 역 이름을 찾을 때 쓰는 사전: (표기, 역 ID). 긴 표기부터 매칭합니다."""
+    src = get_data_source()
+    return sorted(
+        [(st["name"], sid) for sid, st in src.stations().items()] + list(src.aliases().items()),
+        key=lambda x: -len(x[0]),
+    )
 
 # "○○역" 꼴이지만 역 이름이 아닌 표현
 _NOT_STATION_WORDS = {
@@ -115,14 +116,17 @@ class FallbackEngine:
               "unknown": "○○역" 꼴인데 사전에 없는 이름 목록 (예: ["부평"]),
             }
         """
+        src = get_data_source()
+        requiring_suffix = src.names_requiring_suffix()
+        out_keywords = src.out_of_coverage_keywords()
         found: List[Tuple[int, str]] = []
         taken = [False] * len(text)
-        for word, sid in _STATION_VOCAB:
+        for word, sid in _station_vocab():
             for m in re.finditer(re.escape(word), text):
                 s, e = m.start(), m.end()
                 if any(taken[s:e]):
                     continue
-                if word in NAMES_REQUIRING_SUFFIX and not text.startswith("역", e):
+                if word in requiring_suffix and not text.startswith("역", e):
                     continue
                 # "강남구청역"처럼 더 긴 역 이름의 앞부분이면 다른 역입니다.
                 tail = re.match(r"[가-힣A-Za-z0-9]*", text[e:]).group(0)
@@ -136,18 +140,18 @@ class FallbackEngine:
         for _, sid in sorted(found):
             if sid not in seen:
                 seen.add(sid)
-                st = STATIONS[sid]
+                st = src.station(sid)
                 stations.append({"id": sid, "name": st["name"], "lines": st["lines"]})
 
         lowered = text.lower()
-        unsupported = [kw for kw in OUT_OF_COVERAGE_KEYWORDS if kw.lower() in lowered]
+        unsupported = [kw for kw in out_keywords if kw.lower() in lowered]
 
         unknown = []
         for m in re.finditer(r"([가-힣A-Za-z0-9]{1,10})역", text):
             if any(taken[m.start():m.end() - 1]):
                 continue
             word = m.group(1)
-            if word in _NOT_STATION_WORDS or any(kw in word for kw in OUT_OF_COVERAGE_KEYWORDS):
+            if word in _NOT_STATION_WORDS or any(kw in word for kw in out_keywords):
                 continue
             unknown.append(word)
 
@@ -261,9 +265,11 @@ class FallbackEngine:
             )
 
         # 문맥 보정: 역 언급이 없고 "거기" 같은 지칭어가 있으면 직전 역 사용
-        if not stations and cls.RX_REFERENCE.search(text) and ctx.get("last_station_id") in STATIONS:
-            sid = ctx["last_station_id"]
-            st = STATIONS[sid]
+        src = get_data_source()
+        last_id = ctx.get("last_station_id")
+        if not stations and cls.RX_REFERENCE.search(text) and last_id and src.station(last_id):
+            sid = last_id
+            st = src.station(sid)
             stations = [{"id": sid, "name": st["name"], "lines": st["lines"]}]
 
         if intent == "greeting" and not stations:
@@ -328,7 +334,8 @@ class FallbackEngine:
             origin_id, dest_id = stations[0]["id"], stations[1]["id"]
         else:
             dest_id = stations[0]["id"]
-            origin_id = ctx.get("last_station_id") if ctx.get("last_station_id") in STATIONS else None
+            last_id = ctx.get("last_station_id")
+            origin_id = last_id if last_id and get_data_source().station(last_id) else None
             if not origin_id:
                 origin_id = cls.DEFAULT_ORIGIN
                 notes.append(f"출발역이 지정되지 않아 {station_name(origin_id)}역 기준으로 안내합니다.")

@@ -57,6 +57,15 @@ class Settings(BaseModel):
     )
     SESSION_TTL_MINUTES: int = Field(default=30, description="세션 슬롯 캐시 유지 시간")
 
+    # /api/chat 오케스트레이터
+    LLM_PROVIDER: str = Field(
+        default_factory=lambda: _env("LLM_PROVIDER", "factchat"),
+        description="오케스트레이터가 쓸 게이트웨이 (factchat | nvidia)",
+    )
+    LLM_MAX_TOOL_ROUNDS: int = Field(
+        default=4, description="한 요청에서 LLM↔도구 왕복 최대 횟수. 넘으면 폴백으로 전환"
+    )
+
     def provider(self, name: str) -> Dict[str, str]:
         """게이트웨이 이름("factchat" | "nvidia")으로 api_key / base_url / model을 반환합니다."""
         if name == "factchat":
