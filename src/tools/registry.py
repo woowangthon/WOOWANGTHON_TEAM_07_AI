@@ -9,7 +9,8 @@ LLM 클라이언트(오케스트레이터, scripts/llm_demo.py)는 이 모듈만
     result = execute_tool(tool_call.function.name, json.loads(tool_call.function.arguments))
 """
 
-from typing import Any, Dict, List, Type
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Type
 
 from pydantic import BaseModel, ValidationError
 
@@ -82,19 +83,28 @@ TOOL_SPECS: List[dict] = [_spec(name, model, desc) for name, (model, _, desc) in
 
 TOOL_NAMES: List[str] = list(_TOOLS)
 
+# 기준 시각(now)을 받는 도구. LLM에는 노출하지 않고 오케스트레이터가 요청의 current_time으로 채웁니다.
+_TIME_AWARE = {"plan_trip"}
 
-def execute_tool(name: str, args: dict) -> dict:
+
+def execute_tool(name: str, args: dict, *, now: Optional[datetime] = None) -> dict:
     """LLM이 요청한 도구를 실행하고 JSON 직렬화 가능한 dict를 반환합니다.
 
     인자 검증 실패, 모르는 도구, 도구 내부 ValueError는 예외 대신
     {"error": "..."}로 돌려줘서 LLM이 스스로 바로잡을 수 있게 합니다.
+
+    Args:
+        now: 기준 시각. 시각 계산 도구(plan_trip)에만 전달합니다. None이면 서버 현재 시각.
     """
     if name not in _TOOLS:
         return {"error": f"알 수 없는 도구입니다: {name}. 사용 가능: {', '.join(TOOL_NAMES)}"}
     model, fn, _ = _TOOLS[name]
     try:
         parsed = model.model_validate(args or {})
-        result = fn(**parsed.model_dump())
+        kwargs = parsed.model_dump()
+        if now is not None and name in _TIME_AWARE:
+            kwargs["now"] = now
+        result = fn(**kwargs)
     except ValidationError as e:
         problems = "; ".join(f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors())
         return {"error": f"{name} 인자 오류 — {problems}"}

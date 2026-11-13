@@ -2,12 +2,12 @@
 
 import re
 
-from ..data.mock_data import ALIASES, OUT_OF_COVERAGE_KEYWORDS, STATIONS
+from ..data import get_data_source
 from ..models import ResolveStationOutput
 
 
 def _supported(station_id: str, confidence: float) -> ResolveStationOutput:
-    st = STATIONS[station_id]
+    st = get_data_source().station(station_id)
     return ResolveStationOutput(
         station_id=st["id"], name=st["name"], lines=st["lines"],
         coverage="SUPPORTED", confidence=confidence,
@@ -30,14 +30,18 @@ def resolve_station(query: str) -> ResolveStationOutput:
     clean = re.sub(r"\(?[1-9]호선\)?", "", clean)
     base = re.sub(r"역$", "", clean)
 
-    for sid, st in STATIONS.items():
+    src = get_data_source()
+    stations = src.stations()
+    aliases = src.aliases()
+
+    for sid, st in stations.items():
         if base == st["name"] or clean == sid:
             return _supported(sid, 1.0)
 
-    if base in ALIASES:
-        return _supported(ALIASES[base], 0.95)
+    if base in aliases:
+        return _supported(aliases[base], 0.95)
 
-    for kw in OUT_OF_COVERAGE_KEYWORDS:
+    for kw in src.out_of_coverage_keywords():
         if kw.lower() in clean.lower():
             return ResolveStationOutput(
                 station_id=None, name=kw, lines=[],
@@ -45,7 +49,7 @@ def resolve_station(query: str) -> ResolveStationOutput:
             )
 
     if len(base) >= 2:
-        candidates = [sid for sid, st in STATIONS.items() if st["name"].startswith(base)]
+        candidates = [sid for sid, st in stations.items() if st["name"].startswith(base)]
         if len(candidates) == 1:
             return _supported(candidates[0], 0.8)
 

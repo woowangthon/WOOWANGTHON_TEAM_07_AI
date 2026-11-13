@@ -8,7 +8,7 @@
 우왕톤 7팀 "엘리베이터 지하철" 서비스의 **AI 파트**. 휠체어·유모차 이용자에게 지하철 엘리베이터 상태, 고장 시 대체역, 늦지 않는 출발 시각을 챗봇으로 안내한다.
 LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도구가 한다. LLM이 실패하면 규칙 기반 폴백 엔진이 같은 형식으로 답한다.
 
-현재 단계: Phase 1 완료(도구·폴백·테스트), Phase 2 진행 중(LLM 연동 데모까지. FastAPI 오케스트레이터는 아직 없음).
+현재 단계: Phase 1 완료(도구·폴백·테스트). Phase 2·3의 AI 내부 작업(`/api/chat` 오케스트레이터, 세션, 폴백 전환, 후처리 검증) 구현. 실제 LLM 게이트웨이 왕복 검증과 BE API 연동은 남음.
 상세 현황: [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md)
 
 ## 2. 읽는 순서
@@ -19,7 +19,7 @@ LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도�
 4. [docs/DATA_SPEC.md](docs/DATA_SPEC.md) — 외부 데이터셋 명세, 품질 문제, 도구 스키마와의 대응 (데이터 작업 시 필수)
 5. [docs/DESIGN_REVIEW.md](docs/DESIGN_REVIEW.md) — 왜 이렇게 설계했는가 (기록용)
 
-명세와 코드가 다르면 **코드와 IMPLEMENTATION_STATUS가 현재 사실**이고, 명세는 목표다. 차이를 발견하면 IMPLEMENTATION_STATUS §4에 적는다.
+명세와 코드가 다르면 **코드와 IMPLEMENTATION_STATUS가 현재 사실**이고, 명세는 목표다. 차이를 발견하면 IMPLEMENTATION_STATUS §5에 적는다.
 
 ## 3. 반드시 지킬 원칙
 
@@ -36,8 +36,9 @@ LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도�
 모든 명령은 `AI/` 안에서 실행해도 되고, 부모 폴더에서 `AI/...` 경로로 실행해도 된다.
 
 ```powershell
-pip install -r requirements.txt          # pydantic, openai, pytest
-python -m pytest                         # 전체 테스트 (68건). 작업 전후로 반드시 실행
+pip install -r requirements.txt          # pydantic, openai, fastapi, uvicorn, httpx, pytest
+python -m pytest                         # 전체 테스트 (105건). 작업 전후로 반드시 실행
+python scripts/run_server.py             # /api/chat 개발 서버 (http://127.0.0.1:8001, 키 없으면 폴백으로 응답)
 python scripts/llm_demo.py "사당역 엘리베이터 돼?"              # FactChat 게이트웨이 왕복 데모 (API 키 필요)
 python scripts/llm_demo.py --provider nvidia "지금 고장난 역 알려줘"
 python scripts/check_raw_data.py         # data/raw/ 원본 검증 (인코딩·헤더·행 수·값 분포)
@@ -54,14 +55,20 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 | 엘리베이터 상태·고장 목록 | `src/tools/elevator.py` | `tests/tools/test_elevator.py`, IMPLEMENTATION_STATUS §2.2–2.3 |
 | 경로·시간·대체역 계산 | `src/tools/trip.py` | `tests/tools/test_trip.py`, IMPLEMENTATION_STATUS §2.4 |
 | 역·별칭·엘리베이터·대체역·시간 상수 | `src/data/mock_data.py` | `tests/data/test_mock_data.py`가 참조 무결성 검사 |
+| 데이터 소스 인터페이스·구현 (Mock/BE) | `src/data/source.py`, `mock_source.py` | `tests/data/test_data_source.py`, IMPLEMENTATION_STATUS §4.6. 도구·폴백은 `mock_data`를 직접 import하지 않는다 |
+| `/api/chat` 처리 흐름·폴백 전환 | `src/llm/orchestrator.py`, `client.py` | `tests/llm/test_orchestrator.py`, IMPLEMENTATION_STATUS §4.1·4.3 |
+| 카드·액션 조립, 템플릿 문장 | `src/llm/response_builder.py` | IMPLEMENTATION_STATUS §4.2 |
+| 세션 슬롯 | `src/llm/session.py` | `tests/llm/test_session.py`, IMPLEMENTATION_STATUS §4.4 |
+| 후처리 환각 검증 | `src/llm/guard.py` | `tests/llm/test_guard.py`, IMPLEMENTATION_STATUS §4.5 |
+| HTTP 엔드포인트 | `src/api/app.py` | `tests/api/test_chat_api.py`, 명세 §4 |
 | LLM에 보이는 도구 설명 | `src/tools/registry.py` (`_TOOLS`) | 파라미터 스키마는 `models.py`에서 자동 생성되므로 손으로 쓰지 않는다 |
 | 시스템 프롬프트 | `src/llm/prompts.py` | 명세 §5.1 (같은 문구 유지) |
 | 폴백 의도 분류·문장 | `src/fallback/engine.py` | `tests/fallback/test_engine.py`, IMPLEMENTATION_STATUS §3 |
-| 게이트웨이·타임아웃 설정 | `src/config.py`, `.env.example` | — |
+| 게이트웨이·타임아웃·왕복 횟수 설정 | `src/config.py`, `.env.example` | IMPLEMENTATION_STATUS §4.3 |
 | 외부 데이터 원본 추가·교체 | `data/raw/`, `data/sources.json` | `docs/DATA_SPEC.md`, `scripts/check_raw_data.py`로 검증 |
 | 실험용 실행 스크립트 | `scripts/` | — |
 
-다음에 만들 것(Phase 2): FastAPI `/api/chat` 오케스트레이터 (`src/llm/`에 추가). `tools.registry.TOOL_SPECS`/`execute_tool`, `llm.prompts.build_system_prompt`, `config.settings.LLM_TIMEOUT_SECONDS`, `FallbackEngine.process`를 조합하면 된다. 흐름은 명세 §2 시퀀스 다이어그램을 따른다.
+다음에 만들 것: BE API 데이터 소스 구현(`src/data/`에 추가, 이슈 #4~#6). BE 계약 문서(BE #8, #14)가 나온 뒤 진행한다. 오케스트레이터 테스트는 실제 LLM 대신 `tests/llm/fake_llm.py`의 `FakeLLM`을 쓴다.
 
 ## 6. 작업 규칙
 
@@ -70,7 +77,7 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 - Mock 데이터 규칙: 어디서든 참조하는 역 ID는 `STATIONS`에 등록한다. 역명(`name`)에는 `역`을 붙이지 않는다(문장에서 `f"{name}역"`).
 - `src/` 모듈은 import할 때 네트워크 호출·출력 같은 부작용이 없어야 한다. 실행 스크립트는 `scripts/`에 두고 `if __name__ == "__main__":`으로 감싼다.
 - import는 `AI.src.*` 절대 경로(테스트·스크립트) 또는 패키지 내부 상대 경로(`from .tools import ...`)를 쓴다. 레포 폴더 이름은 반드시 `AI`여야 한다.
-- 파일 배치: `src/`는 역할별 하위 패키지(`data/`, `tools/`, `llm/`, `fallback/`)로 나눈다. 여러 계층이 함께 쓰는 `config.py`, `models.py`만 `src/` 바로 아래에 둔다. 테스트는 `tests/` 아래에 `src/`와 같은 구조로 두고, 테스트 파일 이름은 프로젝트 전체에서 겹치지 않게 한다(`tests/`에 `__init__.py`가 없어 이름이 같으면 충돌함).
+- 파일 배치: `src/`는 역할별 하위 패키지(`data/`, `tools/`, `llm/`, `fallback/`, `api/`)로 나눈다. 여러 계층이 함께 쓰는 `config.py`, `models.py`만 `src/` 바로 아래에 둔다. 테스트는 `tests/` 아래에 `src/`와 같은 구조로 두고, 테스트 파일 이름은 프로젝트 전체에서 겹치지 않게 한다(`tests/`에 `__init__.py`가 없어 이름이 같으면 충돌함).
 - 파일명: Python 모듈은 `snake_case.py`. `scripts/`에 `test_*.py`나 `*_test.py` 이름을 쓰지 않는다(pytest가 수집함).
 - 데이터: `data/raw/`의 원본은 **절대 수정하지 않는다**(인코딩 포함). 다시 받으면 `raw/<제공처>/<받은 날짜>/`에 새로 넣고 `data/sources.json`을 고친다. 가공은 스크립트로 `data/processed/`에 만들며, 손으로 만든 값을 섞지 않는다. 원본 컬럼의 의미가 명세로 확인되지 않았으면 문서에 "추정"이라고 쓴다. 절차는 `docs/DATA_SPEC.md` §3.
 - 인코딩: 직접 작성하는 텍스트 파일은 **UTF-8**. UTF-16으로 저장하면 git이 바이너리로 취급한다.

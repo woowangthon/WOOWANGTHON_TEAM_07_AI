@@ -2,11 +2,10 @@
 
 from typing import List, Optional
 
-from ..data.mock_data import ELEVATORS, STATIONS, station_name
+from ..data import get_data_source, station_name
 from ..models import (
     BrokenElevatorsOutput, BrokenStationSummary, ElevatorSegment, ElevatorStatusOutput,
 )
-from .common import MOCK_FRESHNESS_MIN, mock_updated_at
 
 
 def get_elevator_status(station_id: str) -> ElevatorStatusOutput:
@@ -16,13 +15,14 @@ def get_elevator_status(station_id: str) -> ElevatorStatusOutput:
     0개 → AVAILABLE, 전부 → UNAVAILABLE, 그 외 → PARTIAL.
     엘리베이터 데이터가 없는 역(또는 모르는 ID)은 오류 없이 UNKNOWN을 반환합니다.
     """
-    updated_at = mock_updated_at()
-    raw = ELEVATORS.get(station_id)
+    src = get_data_source()
+    updated_at, freshness = src.data_updated_at()
+    raw = src.elevators(station_id)
     if not raw:
         return ElevatorStatusOutput(
             station_id=station_id, station_name=station_name(station_id),
             overall_status="UNKNOWN", updated_at=updated_at,
-            freshness_minutes=MOCK_FRESHNESS_MIN, segments=[],
+            freshness_minutes=freshness, segments=[],
         )
 
     segments = [ElevatorSegment(**e) for e in raw]
@@ -37,7 +37,7 @@ def get_elevator_status(station_id: str) -> ElevatorStatusOutput:
     return ElevatorStatusOutput(
         station_id=station_id, station_name=station_name(station_id),
         overall_status=overall, updated_at=updated_at,
-        freshness_minutes=MOCK_FRESHNESS_MIN, segments=segments,
+        freshness_minutes=freshness, segments=segments,
     )
 
 
@@ -49,9 +49,10 @@ def get_broken_elevators(line_id: Optional[str] = None) -> BrokenElevatorsOutput
 
     정렬: 전체 고장(UNAVAILABLE) 먼저, 그다음 고장 구간 수가 많은 순.
     """
+    src = get_data_source()
     outages: List[BrokenStationSummary] = []
-    for sid, elevs in ELEVATORS.items():
-        st = STATIONS.get(sid)
+    for sid, elevs in src.all_elevators().items():
+        st = src.station(sid)
         if not st or (line_id and line_id not in st["lines"]):
             continue
         broken = [e for e in elevs if e["status"] != "AVAILABLE"]
@@ -67,7 +68,7 @@ def get_broken_elevators(line_id: Optional[str] = None) -> BrokenElevatorsOutput
     outages.sort(key=lambda o: (o.status != "UNAVAILABLE", -o.broken_count))
     return BrokenElevatorsOutput(
         line_id=line_id, count=len(outages),
-        updated_at=mock_updated_at(), outages=outages,
+        updated_at=src.data_updated_at()[0], outages=outages,
     )
 
 

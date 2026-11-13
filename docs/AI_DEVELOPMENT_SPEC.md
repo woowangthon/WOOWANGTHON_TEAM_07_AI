@@ -320,10 +320,23 @@ Content-Type: application/json
     "engine": "llm",
     "latency_ms": 1180,
     "fallback_used": false,
+    "fallback_reason": null,
+    "guard_triggered": false,
     "data_updated_at": "2026-11-11T14:10:00+09:00"
   }
 }
 ```
+
+`metadata` 필드:
+
+| 필드 | 의미 |
+|---|---|
+| `engine` | `llm` 또는 `fallback` |
+| `latency_ms` | 요청 처리 시간 (밀리초) |
+| `fallback_used` | 폴백 엔진으로 답했는지 |
+| `fallback_reason` | 폴백 사유. `timeout`, `rate_limit`, `network`, `server_error`, `api_error`, `not_configured`, `empty_reply`, `max_rounds`, `internal_error`. LLM 응답이면 `null` |
+| `guard_triggered` | LLM 문장이 후처리 검증(§6.1)에 걸려 도구 결과 기반 템플릿 문장으로 바뀌었는지 |
+| `data_updated_at` | 응답 근거 데이터의 기준 시각 (ISO-8601) |
 
 ---
 

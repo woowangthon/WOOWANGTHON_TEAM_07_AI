@@ -27,12 +27,12 @@
 ```text
 [ 사용자 질의 ]
        ↓
-[ AI 오케스트레이터 (FastAPI) ]                       ← 미구현 (Phase 2)
+[ AI 오케스트레이터 (FastAPI) ]                       src/api/, src/llm/orchestrator.py
   ├── 1. 세션 슬롯 주입 + LLM 도구 호출 (의도 분석, 슬롯 추출)   src/llm/, src/tools/registry.py
   ├── 2. 도구 실행 (역명 정규화, 엘리베이터 상태, 경로/시간 계산)  src/tools/
-  ├── 3. 액션 데이터 백엔드 직접 조립 (UI 렌더링용)
+  ├── 3. 액션 데이터 백엔드 직접 조립 (UI 렌더링용)                src/llm/response_builder.py
   ├── 4. LLM이 도구 결과로 안내 문장 생성
-  ├── 5. 후처리 검증 (환각 감지 시 템플릿 문장으로 대체)          ← 미구현 (Phase 3)
+  ├── 5. 후처리 검증 (환각 감지 시 템플릿 문장으로 대체)          src/llm/guard.py
   └── [장애/타임아웃 시] 규칙 기반 폴백 엔진                      src/fallback/
        ↓
 [ 프론트엔드 모바일 웹 챗봇 렌더링 ]
@@ -49,6 +49,8 @@ AI/
 │   ├── config.py            # 게이트웨이·타임아웃 설정, AI/.env 자동 로딩
 │   ├── models.py            # Pydantic 스키마: 도구 입출력 + /api/chat 요청/응답 (FE/BE 계약)
 │   ├── data/
+│   │   ├── source.py        # 데이터 소스 인터페이스 (Mock/BE 교체), get_data_source
+│   │   ├── mock_source.py   # MockDataSource
 │   │   └── mock_data.py     # 역·별칭·엘리베이터·대체역·시간 상수 Mock 데이터
 │   ├── tools/               # Function Calling 도구
 │   │   ├── station.py       # resolve_station — 역 이름 정규화, 서비스 범위 판정
@@ -57,7 +59,14 @@ AI/
 │   │   ├── registry.py      # LLM용 도구 정의(TOOL_SPECS) 자동 생성 + 실행기(execute_tool)
 │   │   └── common.py        # 시각 파싱 등 공용 유틸
 │   ├── llm/
-│   │   └── prompts.py       # 시스템 프롬프트 템플릿 (오케스트레이터도 이 패키지에 추가 예정)
+│   │   ├── prompts.py       # 시스템 프롬프트 템플릿
+│   │   ├── client.py        # OpenAI 호환 LLM 클라이언트, LLMUnavailableError
+│   │   ├── orchestrator.py  # /api/chat 처리: 도구 호출 루프, 폴백 전환, 검증, 세션 갱신
+│   │   ├── response_builder.py  # 도구 결과 → 카드·액션·템플릿 문장
+│   │   ├── guard.py         # 후처리 환각 검증 (역명·시각)
+│   │   └── session.py       # 세션 슬롯 메모리 (TTL 30분)
+│   ├── api/
+│   │   └── app.py           # FastAPI: POST /api/chat, GET /health
 │   └── fallback/
 │       └── engine.py        # LLM 장애 시 규칙 기반 응답 엔진
 ├── data/                    # 외부 데이터 (명세: docs/DATA_SPEC.md)
@@ -65,9 +74,10 @@ AI/
 │   ├── raw/                 # 원본 그대로: <제공처>/<받은 날짜>/<원본 파일명> — 수정 금지
 │   └── processed/           # 전처리 결과 (스크립트로 생성, 커밋하지 않음)
 ├── scripts/
+│   ├── run_server.py        # /api/chat 개발 서버 실행
 │   ├── llm_demo.py          # LLM 게이트웨이 도구 호출 왕복 데모 (FactChat / NVIDIA)
 │   └── check_raw_data.py    # data/raw/ 원본 검증
-├── tests/                   # pytest 단위 테스트 (src/와 같은 구조: data/, tools/, fallback/)
+├── tests/                   # pytest 단위 테스트 (src/와 같은 구조: data/, tools/, fallback/, llm/, api/)
 ├── docs/                    # 명세, 구현 현황, 설계 검토
 ├── .env.example             # 환경 변수 템플릿
 ├── requirements.txt
@@ -87,6 +97,9 @@ pip install -r requirements.txt
 # 테스트
 python -m pytest
 
+# /api/chat 서버 (http://127.0.0.1:8001). API 키가 없으면 폴백 엔진으로 응답합니다.
+python scripts/run_server.py
+
 # LLM 연동 데모: .env.example을 .env로 복사해 API 키를 넣은 뒤
 python scripts/llm_demo.py "신도림에서 강남까지 3시까지 가려면?"
 python scripts/llm_demo.py --provider nvidia "사당역 엘리베이터 돼?"
@@ -103,8 +116,8 @@ python scripts/llm_demo.py --provider nvidia "사당역 엘리베이터 돼?"
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | **Phase 1** | 도구 4종 스키마/Mock 구현, 규칙 기반 폴백 엔진 포팅 | ✅ 완료 |
-| **Phase 2** | FastAPI 오케스트레이터 및 Function Calling 연동 | 🔄 도구 정의·프롬프트·게이트웨이 데모 완료, `/api/chat`·세션 메모리 미구현 |
-| **Phase 3** | 후처리 환각 가드 및 백엔드 도메인 서비스 연동 | ⏳ |
+| **Phase 2** | FastAPI 오케스트레이터 및 Function Calling 연동 | 🔄 `/api/chat`·세션·폴백 전환 구현 (가짜 LLM으로 테스트). 실제 게이트웨이 왕복 검증 남음 |
+| **Phase 3** | 후처리 환각 가드 및 백엔드 도메인 서비스 연동 | 🔄 가드·데이터 소스 인터페이스 구현. BE API 연동은 BE 계약 대기 |
 | **Phase 4** | 50개 벤치마크 평가, 프롬프트 튜닝, FE E2E 통합 테스트 | ⏳ |
 
 현재는 Mock 데이터로 2호선 순환선 구간만 경로를 계산합니다. 자세한 제약은 [`docs/IMPLEMENTATION_STATUS.md`](./docs/IMPLEMENTATION_STATUS.md)를 참고하세요.
