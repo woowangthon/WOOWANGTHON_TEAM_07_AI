@@ -30,6 +30,8 @@ def main() -> int:
     parser.add_argument("--json", help="문항별 결과를 저장할 JSON 경로")
     parser.add_argument("--timeout", type=float, help="LLM 호출 1회 타임아웃(초) 덮어쓰기. 생략 시 config 값")
     parser.add_argument("--model", help="LLM 모델 덮어쓰기. 생략 시 config 값")
+    parser.add_argument("--preresolve", action="store_true", help="역 사전 확인 켜기 (LLM_PRERESOLVE 덮어쓰기)")
+    parser.add_argument("--answer-mode", choices=["llm", "template"], help="답변 문장 방식 (LLM_ANSWER_MODE 덮어쓰기)")
     parser.add_argument("--quiet", action="store_true", help="문항별 진행 표시 끄기")
     args = parser.parse_args()
 
@@ -40,7 +42,8 @@ def main() -> int:
             print(f"{mark} {r.id} {r.engine}{'/' + r.fallback_reason if r.fallback_reason else ''} {r.latency_ms}ms",
                   file=sys.stderr, flush=True)
 
-    orchestrator = make_orchestrator(args.engine, args.timeout, args.model)
+    orchestrator = make_orchestrator(args.engine, args.timeout, args.model,
+                                     True if args.preresolve else None, args.answer_mode)
     results = run_cases(load_cases(), orchestrator, args.only, progress)
     if not results:
         print("실행할 문항이 없습니다.")
@@ -48,7 +51,8 @@ def main() -> int:
     summary = summarize(results)
     label = args.engine
     if args.engine == "llm":
-        label += f" / {orchestrator.client.model} / 호출당 타임아웃 {orchestrator.client.timeout_seconds:g}초"
+        label += (f" / {orchestrator.client.model} / 호출당 타임아웃 {orchestrator.client.timeout_seconds:g}초"
+                  f" / 역 사전 확인 {'켬' if orchestrator.preresolve else '끔'} / 답변 {orchestrator.answer_mode}")
     print(format_report(summary, results, label))
     if args.json:
         Path(args.json).write_text(

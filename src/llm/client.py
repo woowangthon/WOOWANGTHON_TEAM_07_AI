@@ -30,12 +30,20 @@ class ToolCallRequest:
 
 @dataclass
 class LLMReply:
-    """LLM 응답 한 번. tool_calls가 있으면 도구를 실행하고 다시 부릅니다."""
+    """LLM 응답 한 번. tool_calls가 있으면 도구를 실행하고 다시 부릅니다.
+
+    raw_message: 게이트웨이가 준 assistant 메시지 원본. 모델마다 다음 호출에 그대로 돌려줘야 하는
+        필드가 있어(예: Gemini의 tool_calls[].extra_content.google.thought_signature — 빠지면 HTTP 400)
+        있으면 as_message가 원본을 씁니다.
+    """
     content: Optional[str] = None
     tool_calls: List[ToolCallRequest] = field(default_factory=list)
+    raw_message: Optional[dict] = None
 
     def as_message(self) -> dict:
         """대화 기록에 다시 넣을 assistant 메시지 (OpenAI Chat Completions 형식)."""
+        if self.raw_message:
+            return dict(self.raw_message)
         msg: dict = {"role": "assistant", "content": self.content or ""}
         if self.tool_calls:
             msg["tool_calls"] = [
@@ -115,4 +123,4 @@ class OpenAICompatClient:
             ToolCallRequest(id=tc.id, name=tc.function.name, arguments=tc.function.arguments or "{}")
             for tc in (msg.tool_calls or [])
         ]
-        return LLMReply(content=msg.content, tool_calls=calls)
+        return LLMReply(content=msg.content, tool_calls=calls, raw_message=msg.model_dump(exclude_none=True))

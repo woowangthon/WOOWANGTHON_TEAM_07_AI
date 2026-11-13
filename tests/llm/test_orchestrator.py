@@ -208,3 +208,63 @@ def test_guard_rejection_with_only_resolve_station_falls_back():
     res = ask(orch, "거기 말고 다른 역은?")
     assert res.metadata.fallback_reason == "guard_rejected"
     assert "신대방역" in res.text and "강남역" not in res.text
+
+
+# --- 응답 속도 옵션 (이슈 #17) ---
+
+def test_preresolve_puts_station_ids_in_prompt():
+    orch, llm = make([
+        tools(call("plan_trip", start_id="sindorim", end_id="gangnam", arrive_by="15:00")),
+        say("신도림역에서 14:18에 출발하세요."),
+    ], preresolve=True)
+    res = ask(orch, "신도림에서 강남까지 3시까지 가려면?")
+    system_prompt = llm.requests[0][0]["content"]
+    assert "station_id=sindorim" in system_prompt and "station_id=gangnam" in system_prompt
+    assert [t.name for t in res.tool_calls] == ["resolve_station", "resolve_station", "plan_trip"]
+    assert len(llm.requests) == 2  # resolve_station 왕복 없이 2회
+
+
+def test_preresolve_out_of_coverage_card():
+    orch, llm = make([say("죄송해요, 판교역은 지원하지 않는 역이에요.")], preresolve=True)
+    res = ask(orch, "판교역 엘리베이터 상태는?")
+    assert "지원 범위 밖" in llm.requests[0][0]["content"]
+    assert res.card_type == "out_of_coverage"
+    assert res.metadata.guard_triggered is False
+
+
+def test_template_mode_answers_after_data_tool():
+    orch, llm = make([tools(call("plan_trip", start_id="sindorim", end_id="gangnam", arrive_by="15:00"))],
+                     answer_mode="template")
+    res = ask(orch, "신도림에서 강남까지 3시까지 가려면?")
+    assert len(llm.requests) == 1
+    assert res.metadata.engine == "llm"
+    assert "14:18에 출발하세요" in res.text
+    assert res.card_type == "trip_plan"
+
+
+def test_template_mode_keeps_going_after_resolve_only_round():
+    orch, llm = make([
+        tools(call("resolve_station", query="신림")),
+        tools(call("get_elevator_status", station_id="sillim")),
+    ], answer_mode="template")
+    res = ask(orch, "신림역 엘리베이터 돼?")
+    assert len(llm.requests) == 2
+    assert "신대방역" in res.text  # 고장 역 대체역 보충 포함
+
+
+def test_template_mode_states_assumed_origin():
+    orch, _ = make([tools(call("plan_trip", start_id="sindorim", end_id="gangnam", arrive_by="17:00"))],
+                   answer_mode="template")
+    res = ask(orch, "강남역까지 5시까지 가려면 언제 나와야 해?")
+    assert res.text.startswith("출발역이 지정되지 않아 신도림역 기준으로 안내합니다.")
+
+
+def test_template_mode_uses_llm_text_when_no_tools():
+    orch, _ = make([say("안녕하세요! 어느 역을 확인해 드릴까요?")], answer_mode="template")
+    res = ask(orch, "안녕")
+    assert res.text == "안녕하세요! 어느 역을 확인해 드릴까요?"
+
+
+def test_invalid_answer_mode_is_rejected():
+    with pytest.raises(ValueError):
+        ChatOrchestrator(client=FakeLLM([]), sessions=SessionStore(), answer_mode="stream")

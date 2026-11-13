@@ -115,3 +115,29 @@ def test_process_reference_uses_last_station():
 
 def test_process_greeting():
     assert F.process("안녕").card_type == "help"
+
+
+def test_reference_as_destination_keeps_direction():
+    # 벤치마크 CX09: "신촌에서 그 역까지" — 신촌 출발, 최근 역(시청) 도착
+    res = F.process("신촌에서 그 역까지 3시까지 가려면?", current_time="12:00",
+                    session_ctx={"last_station_id": "cityhall"})
+    plan = [t for t in res.tool_calls if t.name == "plan_trip"][0]
+    assert (plan.args["start_id"], plan.args["end_id"]) == ("sinchon", "cityhall")
+    assert res.text.startswith("신촌역에서 시청역까지")
+
+
+def test_reference_as_origin_keeps_direction():
+    res = F.process("거기서 강남까지 3시까지 가려면?", current_time="12:00",
+                    session_ctx={"last_station_id": "sindorim"})
+    plan = [t for t in res.tool_calls if t.name == "plan_trip"][0]
+    assert (plan.args["start_id"], plan.args["end_id"]) == ("sindorim", "gangnam")
+
+
+def test_outages_respect_line_filter():
+    # 벤치마크 EL06
+    res = F.process("2호선에서 엘리베이터 고장 난 역 목록 보여줘")
+    assert res.card_type == "outages_list"
+    assert res.tool_calls[0].args == {"line_id": "2"}
+    assert res.text.startswith("현재 2호선에서")
+    res = F.process("지금 고장난 역 알려줘")
+    assert res.tool_calls[0].args == {}

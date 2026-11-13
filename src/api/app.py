@@ -10,13 +10,25 @@ import만으로는 LLM을 호출하지 않습니다. 오케스트레이터는 �
 from typing import Optional
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from ..config import settings
 
 from ..models import ChatRequest, ChatResponse
 
 
-def create_app(orchestrator=None) -> FastAPI:
-    """앱을 만듭니다. 테스트에서는 가짜 LLM을 넣은 ChatOrchestrator를 넘깁니다."""
+def create_app(orchestrator=None, cors_origins: Optional[list] = None) -> FastAPI:
+    """앱을 만듭니다. 테스트에서는 가짜 LLM을 넣은 ChatOrchestrator를 넘깁니다.
+
+    cors_origins: FE 출처 목록. None이면 설정 CORS_ALLOW_ORIGINS (기본 "*").
+    """
     app = FastAPI(title="우왕이 AI 챗봇 API", version="0.1.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins if cors_origins is not None else settings.cors_origins(),
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type"],
+    )
     state: dict = {"orchestrator": orchestrator}
 
     def get_orchestrator():

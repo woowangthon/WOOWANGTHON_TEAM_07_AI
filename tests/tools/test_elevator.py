@@ -28,3 +28,9 @@ def test_get_broken_elevators_all_and_by_line():
 
     line4 = get_broken_elevators("4")
     assert [o.station_id for o in line4.outages] == ["sadang"]
+
+
+def test_get_elevator_status_rejects_unregistered_station():
+    import pytest
+    with pytest.raises(ValueError, match="알 수 없는 역 ID"):
+        get_elevator_status("판교")

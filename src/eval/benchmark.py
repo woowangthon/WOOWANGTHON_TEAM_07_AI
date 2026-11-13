@@ -152,10 +152,11 @@ class _NoLLM:
         raise LLMUnavailableError("not_configured", "벤치마크 폴백 기준선")
 
 
-def make_orchestrator(engine: str, timeout: Optional[float] = None, model: Optional[str] = None) -> ChatOrchestrator:
+def make_orchestrator(engine: str, timeout: Optional[float] = None, model: Optional[str] = None,
+                      preresolve: Optional[bool] = None, answer_mode: Optional[str] = None) -> ChatOrchestrator:
     """벤치마크용 오케스트레이터.
 
-    timeout, model은 측정용 덮어쓰기입니다 (운영 설정 config.py는 바꾸지 않음).
+    timeout, model, preresolve, answer_mode는 측정용 덮어쓰기입니다 (운영 설정 config.py는 바꾸지 않음).
     예: 타임아웃 영향을 빼고 LLM 정확도만 보려면 timeout=30.
     """
     if engine == "fallback":
@@ -166,7 +167,8 @@ def make_orchestrator(engine: str, timeout: Optional[float] = None, model: Optio
             client.timeout_seconds = timeout
         if model:
             client.model = model
-        return ChatOrchestrator(client=client, sessions=SessionStore())
+        return ChatOrchestrator(client=client, sessions=SessionStore(),
+                                preresolve=preresolve, answer_mode=answer_mode)
     raise ValueError(f"engine은 fallback 또는 llm이어야 합니다: {engine!r}")
 
 

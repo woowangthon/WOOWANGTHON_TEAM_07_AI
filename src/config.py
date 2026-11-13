@@ -66,6 +66,25 @@ class Settings(BaseModel):
         default=4, description="한 요청에서 LLM↔도구 왕복 최대 횟수. 넘으면 폴백으로 전환"
     )
 
+    # 응답 속도 옵션 (이슈 #17). 기본값은 기존 동작. 효과는 docs/BENCHMARK.md
+    LLM_PRERESOLVE: bool = Field(
+        default_factory=lambda: _env("LLM_PRERESOLVE", "false").strip().lower() in ("1", "true", "yes", "on"),
+        description="문장 속 역을 코드가 먼저 resolve_station으로 확인해 프롬프트에 넣음 (LLM 왕복 1회 절약)",
+    )
+    LLM_ANSWER_MODE: str = Field(
+        default_factory=lambda: _env("LLM_ANSWER_MODE", "llm").strip().lower(),
+        description="llm: 도구 결과를 LLM에 돌려줘 문장 생성 / template: 데이터 도구 실행 후 템플릿 문장으로 바로 답함 (왕복 1회 절약)",
+    )
+
+    # HTTP 서버
+    CORS_ALLOW_ORIGINS: str = Field(
+        default_factory=lambda: _env("CORS_ALLOW_ORIGINS", "*"),
+        description="/api/chat을 부를 수 있는 FE 출처 (쉼표로 구분). 기본 * (개발용, 쿠키·인증 없음)",
+    )
+
+    def cors_origins(self) -> list:
+        return [o.strip() for o in self.CORS_ALLOW_ORIGINS.split(",") if o.strip()]
+
     def provider(self, name: str) -> Dict[str, str]:
         """게이트웨이 이름("factchat" | "nvidia")으로 api_key / base_url / model을 반환합니다."""
         if name == "factchat":

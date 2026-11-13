@@ -3,7 +3,7 @@
 > 이 문서는 **현재 코드가 실제로 어떻게 동작하는지**를 정리한다. 목표 설계는 [`AI_DEVELOPMENT_SPEC.md`](./AI_DEVELOPMENT_SPEC.md)에 있다.
 > 코드 동작을 바꾸면 이 문서의 해당 절도 같이 고친다.
 >
-> 최종 갱신: 2026-11-13 · 단위 테스트 167건 통과
+> 최종 갱신: 2026-11-13 · 단위 테스트 182건 통과
 
 ---
 
@@ -20,7 +20,7 @@
 | LLM 게이트웨이 왕복 데모 | §9 Phase 2 | ✅ 실험용 | `scripts/llm_demo.py` |
 | `/api/chat` 요청/응답 모델 | §4 | ✅ | `src/models.py` |
 | 데이터 소스 인터페이스 (Mock/BE 교체) | — | ✅ Mock 구현만 | `src/data/source.py`, `mock_source.py` |
-| FastAPI `/api/chat` 엔드포인트 (오케스트레이터) | §4 | ✅ FactChat `gpt-5.1`로 50문항 왕복 확인. **응답 시간이 목표 초과** ([BENCHMARK](./BENCHMARK.md) §4) | `src/api/app.py`, `src/llm/orchestrator.py`, `client.py` |
+| FastAPI `/api/chat` 엔드포인트 (오케스트레이터) | §4 | ✅ FactChat `gpt-5.1`로 50문항 왕복 확인. 기본 설정은 **응답 시간이 목표 초과**, `gemini-3.5-flash-lite` + 응답 속도 옵션(§4.6)은 목표 안 ([BENCHMARK](./BENCHMARK.md) §4) | `src/api/app.py`, `src/llm/orchestrator.py`, `client.py` |
 | 액션·카드 조립 (도구 결과 기반) | §4 | ✅ | `src/llm/response_builder.py` |
 | 세션 슬롯 메모리 (TTL 30분) | §5.2 | ✅ 인메모리 | `src/llm/session.py` |
 | LLM 장애 → 폴백 전환 | §6.2 | ✅ | `src/llm/orchestrator.py` |
@@ -34,7 +34,7 @@
 
 LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행한다. 인자를 `*Input` 모델로 검증하고, 실패하거나 도구가 `ValueError`를 내면 예외 대신 `{"error": "..."}`를 돌려준다. `now`는 `plan_trip`에만 전달되며 오케스트레이터가 요청의 `current_time`으로 채운다.
 
-도구와 폴백 엔진은 `mock_data.py`를 직접 읽지 않고 데이터 소스 인터페이스(`data.get_data_source()`)를 거친다 (§4.6). 아래 동작은 기본 데이터 소스인 `MockDataSource` 기준이다.
+도구와 폴백 엔진은 `mock_data.py`를 직접 읽지 않고 데이터 소스 인터페이스(`data.get_data_source()`)를 거친다 (§4.8). 아래 동작은 기본 데이터 소스인 `MockDataSource` 기준이다.
 
 ### 2.1 `resolve_station(query)`
 
@@ -53,7 +53,7 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 ### 2.2 `get_elevator_status(station_id)`
 
 - `overall_status`는 고장 구간 **개수**로 정한다: 0개 → `AVAILABLE`, 전부 → `UNAVAILABLE`, 그 외 → `PARTIAL`. `MAINTENANCE`도 고장으로 센다.
-- 엘리베이터 데이터가 있는 역은 9곳(`ELEVATORS`). 나머지 역과 모르는 ID는 오류 없이 `UNKNOWN`.
+- 엘리베이터 데이터가 있는 역은 9곳(`ELEVATORS`). 나머지 지원 역은 오류 없이 `UNKNOWN`. 지원 역 목록에 없는 ID는 `ValueError`(실행기에서는 `{"error"}`) — 범위 밖 역("판교")을 지원 역처럼 "정보 없음"으로 안내하지 않기 위해서다.
 - `updated_at`은 "현재 − 5분", `freshness_minutes`는 5로 고정된 Mock 값이다.
 - 현재 Mock 상 고장 역: 사당(2호선 승강장), 신림(6번 출구), 신도림(3번 출구) — 모두 `PARTIAL`.
 
@@ -146,7 +146,7 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 | card_type | 언제 | 호출 도구 | 액션 |
 |---|---|---|---|
 | `help` | 인사, 역 없음 | — | — |
-| `outages_list` / `outages_empty` | 고장 목록 의도 | `get_broken_elevators` | 상위 3역 `openStation` |
+| `outages_list` / `outages_empty` | 고장 목록 의도 | `get_broken_elevators` (문장에 `N호선`이 있으면 `line_id=N`) | 상위 3역 `openStation` |
 | `out_of_coverage` | 미지원 지역/노선 언급 | (`resolve_station` 기록만) | — |
 | `need_station` | 필요한 역을 알 수 없음, 사전에 없는 역, 출발=도착 | — | — |
 | `trip_plan` | departure/route | `resolve_station`, `plan_trip` | `openTime`, 대체역마다 `showAlternative` |
@@ -154,6 +154,7 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 | `elevator_status` | elevator/alternative | `resolve_station`, `get_elevator_status`, 고장이면 `plan_trip(sid, sid)` | 대체역 있으면 `showAlternative`, `openStation` |
 
 - departure/route의 출발·도착: 역 2개 → 앞이 출발. 역 1개 → 도착역, 출발은 `last_station_id` 또는 신도림(이 경우 "출발역이 지정되지 않아 신도림역 기준으로 안내합니다" 문구 포함).
+  - 단, 역 1개와 함께 지칭어가 도착지로 쓰이면("신촌에서 **그 역까지**", "거기로") 말한 역이 출발, `last_station_id`가 도착이다.
 - `tool_calls`에는 실제로 호출한 도구와 인자를 그대로 기록한다.
 - `metadata.latency_ms`는 0 (측정은 오케스트레이터 몫).
 
@@ -172,6 +173,7 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 5. 세션 슬롯을 갱신하고(§4.4) `metadata.latency_ms`를 기록한다.
 
 - 대화 원문은 저장하지 않는다. 요청마다 시스템 프롬프트 + 이번 사용자 문장으로 새로 시작한다.
+- 도구를 부른 assistant 메시지는 게이트웨이가 준 원본 그대로 대화에 다시 넣는다 (모델별 추가 필드 보존, 예: Gemini `thought_signature`).
 - `/api/chat`은 동기 함수이며 FastAPI 스레드 풀에서 실행된다. 명세의 `async/await`는 아직 쓰지 않는다.
 - 실행: `python scripts/run_server.py` (기본 포트 8001). LLM 키가 없으면 모든 요청이 폴백으로 답한다.
 
@@ -227,7 +229,24 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 - 도구 결과로 만들 템플릿이 도움말(`help`)뿐이면 대신 폴백 엔진으로 답한다(`fallback_reason="guard_rejected"`). 벤치마크에서 LLM이 "거기 대체역은?"에 도구 없이 역명을 지어낸 경우가 여기에 해당했다.
 - 검사하지 않는 것: '역' 없이 쓴 역명, 소요 시간·거리 숫자, 엘리베이터 위치 설명.
 
-### 4.6 데이터 소스 (`data/source.py`)
+### 4.6 응답 속도 옵션 (이슈 #17)
+
+`gpt-5.1`은 호출 1회에 약 1.2~3.3초가 걸리고 한 질문에 2~3회 호출해 P50이 약 5.5초다. 호출 횟수를 줄이는 두 옵션을 두었다. **기본값은 둘 다 꺼짐(기존 동작)** 이며, 켤지는 측정 결과([BENCHMARK](./BENCHMARK.md) §4)를 보고 팀이 정한다.
+
+| 설정 | 값 | 동작 | 줄어드는 호출 |
+|---|---|---|---|
+| `LLM_PRERESOLVE` | `false`(기본) / `true` | 폴백 엔진의 역 추출로 문장 속 역을 찾아 코드가 `resolve_station`을 먼저 실행하고, 결과(ID·범위 밖·없음)를 시스템 프롬프트 끝 `[이번 문장에서 미리 확인한 역]`에 넣는다. 실행 기록은 `tool_calls`에 남는다 | 역 확인 1회 |
+| `LLM_ANSWER_MODE` | `llm`(기본) / `template` | `template`이면 데이터 도구(`get_elevator_status`, `get_broken_elevators`, `plan_trip`)를 실행한 직후 LLM에 다시 묻지 않고 §4.2 템플릿 문장으로 답한다. 역 확인만 한 라운드는 계속 진행한다. LLM이 도구 없이 문장으로 답하면 그 문장을 검증해 쓴다 | 답변 문장 1회 |
+
+- 템플릿 모드에서 사용자가 말하지 않은 출발역으로 경로를 계산했으면 문장 앞에 밝힌다: 세션 최근 역이면 "최근 조회한 ○○역에서 출발하는 기준으로 안내합니다.", 아니면 "출발역이 지정되지 않아 ○○역 기준으로 안내합니다."
+- 템플릿 문장은 도구 결과로만 만들므로 후처리 검증을 하지 않는다(`guard_triggered=false`).
+- 측정 결과 ([BENCHMARK](./BENCHMARK.md) §4 "응답 속도 옵션과 모델 비교"): `gemini-3.5-flash-lite` + 두 옵션이 운영 타임아웃 3초에서 50/50, P50 1.0초 / P95 1.5초로 유일하게 목표 안이었다. `gpt-5.1` + 두 옵션은 P50 1.6초 / P95 3.0초, 49/50.
+
+### 4.7 HTTP 설정
+
+- CORS: `CORS_ALLOW_ORIGINS`(쉼표 구분, 기본 `*`). 쿠키·인증을 쓰지 않으므로 `*`로 FE 정적 파일(`file://`, 출처 `null`)에서도 호출된다. 배포 때는 FE 주소로 좁힌다.
+
+### 4.8 데이터 소스 (`data/source.py`)
 
 - `DataSource` 인터페이스: 역 목록·역 하나·별칭·미지원 키워드, 역별 엘리베이터·전체 엘리베이터·기준 시각, 등록된 대체역·인접 역·경로, 시간 상수·대체역 기본 거리.
 - 구현 선택: 환경 변수 `AI_DATA_SOURCE` (현재 `mock`만 지원). 테스트는 `use_data_source(가짜)`로 바꿔 끼운다.
@@ -257,14 +276,26 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 
 - 경로는 2호선 순환선만. 순환선 밖 역은 `is_possible=False`로 정직하게 거절한다.
 - 대체역 거리 정보가 없는 곳(방배, 신대방, 인접 역 자동 선택)은 기본값 800m / 10분.
-- 폴백은 노선 필터("2호선 고장 난 역")를 읽지 않고, "신촌에서 그 역까지"처럼 새 역과 지칭어가 함께 나오면 직전 역을 출발역으로 넣는다 ([BENCHMARK](./BENCHMARK.md) EL06, CX09).
 - 폴백의 역 추출은 띄어쓰기가 없는 문장("신도림에서강남역")에서 앞 역을 놓칠 수 있다. LLM 경로는 `resolve_station`이 역 이름만 받으므로 영향 없음.
 - 세션은 서버 프로세스 메모리에만 있다. 서버를 여러 대 띄우거나 재시작하면 이어지지 않는다.
-- `gpt-5.1`은 한 질문에 P50 약 5.5초가 걸려, 호출당 3초 타임아웃에서 32~44%가 폴백으로 넘어간다 ([BENCHMARK](./BENCHMARK.md) §4). 모델·타임아웃은 팀 결정 사항이다.
+- 기본 설정(`gpt-5.1`, 응답 속도 옵션 끔)은 한 질문에 P50 약 5.5초가 걸려, 호출당 3초 타임아웃에서 32~44%가 폴백으로 넘어간다 ([BENCHMARK](./BENCHMARK.md) §4). 목표 안에 든 조합(§4.6)으로 바꿀지, 모델·타임아웃은 팀 결정 사항이다.
 
 ---
 
 ## 7. 변경 이력
+
+### 2026-11-13 — 폴백 오류 수정 (이슈 #18), 응답 속도 옵션 (이슈 #17), CORS (이슈 #14 일부)
+
+| 추가·변경 | 내용 |
+|---|---|
+| `src/fallback/engine.py` | "○○에서 그 역까지"면 말한 역이 출발·최근 역이 도착 (반대 방향 안내 수정, 벤치마크 CX09). 고장 목록에서 `N호선` 필터 반영 (EL06). 폴백 기준선 48/50 → 50/50 |
+| `src/llm/orchestrator.py`, `prompts.py`, `config.py` | `LLM_PRERESOLVE`, `LLM_ANSWER_MODE` 옵션 (§4.6). 기본값은 기존 동작 |
+| `src/api/app.py`, `config.py` | CORS 허용 (`CORS_ALLOW_ORIGINS`, 기본 `*`) |
+| `scripts/run_benchmark.py` | `--preresolve`, `--answer-mode` |
+| `docs/BENCHMARK.md` | 옵션·모델 조합 7개 측정. `gemini-3.5-flash-lite` + 두 옵션: 3초 타임아웃에서 50/50, P95 1.5초 |
+| `src/tools/elevator.py` | `get_elevator_status`가 지원 역 목록에 없는 ID에 오류를 돌려줌 (역 사전 확인 측정에서 LLM이 "판교"로 상태를 조회해 지원 역처럼 안내한 문제) |
+| `src/llm/client.py` | 게이트웨이가 준 assistant 메시지 원본을 다음 호출에 그대로 돌려줌. Gemini는 `tool_calls[].extra_content.google.thought_signature`가 빠지면 HTTP 400을 내서, 도구 결과를 붙인 두 번째 호출이 모두 실패했음 |
+| 테스트 | 폴백 3건, 오케스트레이터 7건, API 2건, 도구 1건, 클라이언트 2건 추가 (총 182건) |
 
 ### 2026-11-13 — 50문항 벤치마크와 프롬프트 튜닝 (이슈 #13), BE OA-15994 확인 결과 반영 (이슈 #1)
 

@@ -13,9 +13,14 @@ def get_elevator_status(station_id: str) -> ElevatorStatusOutput:
 
     overall_status는 고장(AVAILABLE이 아닌) 구간 개수로 정합니다:
     0개 → AVAILABLE, 전부 → UNAVAILABLE, 그 외 → PARTIAL.
-    엘리베이터 데이터가 없는 역(또는 모르는 ID)은 오류 없이 UNKNOWN을 반환합니다.
+    지원 역인데 엘리베이터 데이터가 없으면 오류 없이 UNKNOWN을 반환합니다.
+
+    Raises:
+        ValueError: 지원 역 목록에 없는 ID (범위 밖 역을 지원 역처럼 안내하지 않도록).
     """
     src = get_data_source()
+    if src.station(station_id) is None:
+        raise ValueError(f"station_id: 알 수 없는 역 ID입니다 ({station_id!r}). resolve_station으로 먼저 확인하세요.")
     updated_at, freshness = src.data_updated_at()
     raw = src.elevators(station_id)
     if not raw:

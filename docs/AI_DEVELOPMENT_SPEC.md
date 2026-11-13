@@ -366,6 +366,15 @@ Content-Type: application/json
 - 최근 경로: {last_route_summary}
 ```
 
+역 사전 확인 옵션(`LLM_PRERESOLVE=true`, 구현 현황 §4.6)을 켜면 끝에 다음 블록을 붙인다.
+
+```text
+[이번 문장에서 미리 확인한 역]
+- 신도림 → station_id=sindorim (신도림역, 노선 1, 2)
+- 판교 → 지원 범위 밖 (OUT_OF_COVERAGE). 이 역으로 다른 도구를 호출하지 말고 지원하지 않는다고 안내
+- 위 역은 resolve_station을 다시 호출하지 말고 station_id를 바로 도구에 쓰십시오. 목록에 없는 역 이름이 문장에 있으면 그때만 resolve_station을 호출하십시오.
+```
+
 ### 5.2 세션 슬롯 메모리 관리
 - 세션 객체:
   ```python

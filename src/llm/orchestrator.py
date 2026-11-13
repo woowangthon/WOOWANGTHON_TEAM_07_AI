@@ -20,7 +20,8 @@ from typing import List, Optional, Tuple
 from ..config import settings
 from ..fallback import FallbackEngine
 from ..models import ChatRequest, ChatResponse, ChatResponseMetadata, ToolCallRecord
-from ..tools import parse_hhmm
+from ..data import station_name
+from ..tools import parse_hhmm, resolve_station
 from ..tools.registry import TOOL_SPECS, execute_tool
 from .client import LLMClient, LLMUnavailableError, OpenAICompatClient
 from .guard import check_text
@@ -69,6 +70,44 @@ def _append_missing_alternatives(text: str, supplements: List[ToolResult]) -> st
     return "\n".join([text] + lines) if lines else text
 
 
+DATA_TOOLS = {"get_elevator_status", "get_broken_elevators", "plan_trip"}
+
+
+def _preresolve(message: str) -> Tuple[List[ToolResult], Optional[str]]:
+    """문장 속 역 이름을 규칙(폴백 엔진의 역 추출)으로 찾아 resolve_station을 미리 실행합니다.
+
+    Returns: (실행 기록, 프롬프트에 넣을 줄). 찾은 역이 없으면 ([], None).
+    """
+    mentions = FallbackEngine.extract_mentions(message)
+    queries = [s["name"] for s in mentions["stations"]] + mentions["unsupported"] + [f"{w}역" for w in mentions["unknown"]]
+    results, lines = [], []
+    for q in queries:
+        res = resolve_station(q).model_dump()
+        results.append(ToolResult("resolve_station", {"query": q}, res))
+        if res["coverage"] == "SUPPORTED":
+            lines.append(f"- {q} → station_id={res['station_id']} ({res['name']}역, 노선 {', '.join(res['lines'])})")
+        elif res["coverage"] == "OUT_OF_COVERAGE":
+            lines.append(f"- {q} → 지원 범위 밖 (OUT_OF_COVERAGE). 이 역으로 다른 도구를 호출하지 말고 지원하지 않는다고 안내")
+        else:
+            lines.append(f"- {q} → 찾을 수 없는 역 (NOT_FOUND). 이 역으로 다른 도구를 호출하지 말고 역 이름을 다시 확인해 달라고 안내")
+    return results, ("\n".join(lines) or None)
+
+
+def _origin_note(results: List[ToolResult], message: str, ctx: SessionContext) -> Optional[str]:
+    """템플릿 답변에서 사용자가 말하지 않은 출발역을 썼으면 그 사실을 밝히는 문장."""
+    trips = [r for r in results if r.name == "plan_trip" and r.ok and r.args.get("start_id") != r.args.get("end_id")]
+    if not trips:
+        return None
+    origin = trips[-1].args.get("start_id")
+    mentioned = {s["id"] for s in FallbackEngine.extract_mentions(message)["stations"]}
+    if origin in mentioned:
+        return None
+    name = station_name(origin)
+    if origin == ctx.last_station_id:
+        return f"최근 조회한 {name}역에서 출발하는 기준으로 안내합니다."
+    return f"출발역이 지정되지 않아 {name}역 기준으로 안내합니다."
+
+
 class _NeedFallback(Exception):
     def __init__(self, reason: str):
         super().__init__(reason)
@@ -82,13 +121,20 @@ class ChatOrchestrator:
         client: LLM 클라이언트. None이면 설정(LLM_PROVIDER)으로 OpenAICompatClient를 만듭니다.
         sessions: 세션 저장소. None이면 SESSION_TTL_MINUTES로 새로 만듭니다.
         max_rounds: LLM ↔ 도구 왕복 최대 횟수. None이면 LLM_MAX_TOOL_ROUNDS.
+        preresolve: 역 사전 확인. None이면 LLM_PRERESOLVE.
+        answer_mode: "llm" | "template". None이면 LLM_ANSWER_MODE.
     """
 
     def __init__(self, client: Optional[LLMClient] = None, sessions: Optional[SessionStore] = None,
-                 max_rounds: Optional[int] = None):
+                 max_rounds: Optional[int] = None, preresolve: Optional[bool] = None,
+                 answer_mode: Optional[str] = None):
         self.client = client if client is not None else OpenAICompatClient.from_settings()
         self.sessions = sessions if sessions is not None else SessionStore(ttl_minutes=settings.SESSION_TTL_MINUTES)
         self.max_rounds = max_rounds or settings.LLM_MAX_TOOL_ROUNDS
+        self.preresolve = settings.LLM_PRERESOLVE if preresolve is None else preresolve
+        self.answer_mode = (answer_mode or settings.LLM_ANSWER_MODE)
+        if self.answer_mode not in ("llm", "template"):
+            raise ValueError(f"answer_mode는 llm 또는 template이어야 합니다: {self.answer_mode!r}")
 
     @staticmethod
     def _now(current_time: Optional[str]) -> datetime:
@@ -128,13 +174,18 @@ class ChatOrchestrator:
     def _run_llm(self, req: ChatRequest, ctx: SessionContext,
                  now: datetime) -> Tuple[ChatResponse, List[ToolResult]]:
         hhmm = now.strftime("%H:%M")
+        results: List[ToolResult] = []
+        preresolved_lines = None
+        if self.preresolve:
+            pre, preresolved_lines = _preresolve(req.message)
+            results += pre
         messages = [
             {"role": "system", "content": build_system_prompt(
-                hhmm, ctx.last_station_id, ctx.last_station_name, ctx.route_summary())},
+                hhmm, ctx.last_station_id, ctx.last_station_name, ctx.route_summary(), preresolved_lines)},
             {"role": "user", "content": req.message},
         ]
-        results: List[ToolResult] = []
 
+        text: Optional[str] = None  # 템플릿 모드에서 데이터 도구를 실행하면 None으로 남는다
         for _ in range(self.max_rounds):
             reply = self.client.complete(messages, TOOL_SPECS)
             if not reply.tool_calls:
@@ -143,16 +194,28 @@ class ChatOrchestrator:
                     raise _NeedFallback("empty_reply")
                 break
             messages.append(reply.as_message())
+            round_results = []
             for tc in reply.tool_calls:
                 args = tc.parsed_args()
                 result = execute_tool(tc.name, args, now=now)
-                results.append(ToolResult(tc.name, args, result))
+                round_results.append(ToolResult(tc.name, args, result))
                 messages.append({
                     "role": "tool", "tool_call_id": tc.id,
                     "content": json.dumps(result, ensure_ascii=False),
                 })
+            results += round_results
+            if self.answer_mode == "template" and any(r.name in DATA_TOOLS and r.ok for r in round_results):
+                break  # 데이터를 얻었으면 LLM에 다시 묻지 않고 템플릿으로 답한다
         else:
             raise _NeedFallback("max_rounds")
+
+        if text is None:
+            supplements = _supplement_alternatives(results, now)
+            results += supplements
+            built = build_response(results)
+            note = _origin_note(results, req.message, ctx)
+            text = f"{note}\n{built.safe_text}" if note else built.safe_text
+            return self._make_response(req, text, built, results, guard_triggered=False), results
 
         # 검증은 LLM이 실제로 본 도구 결과만으로 한다.
         verdict = check_text(text, results, req.message, hhmm)
@@ -171,11 +234,15 @@ class ChatOrchestrator:
         else:
             text = _append_missing_alternatives(text, supplements)
 
-        metadata = ChatResponseMetadata(engine="llm", fallback_used=False, guard_triggered=not verdict.ok)
+        return self._make_response(req, text, built, results, guard_triggered=not verdict.ok), results
+
+    @staticmethod
+    def _make_response(req: ChatRequest, text: str, built, results: List[ToolResult],
+                       guard_triggered: bool) -> ChatResponse:
+        metadata = ChatResponseMetadata(engine="llm", fallback_used=False, guard_triggered=guard_triggered)
         if built.data_updated_at:
             metadata.data_updated_at = built.data_updated_at
-
-        resp = ChatResponse(
+        return ChatResponse(
             session_id=req.session_id,
             text=text,
             card_type=built.card_type,
@@ -184,4 +251,3 @@ class ChatOrchestrator:
             suggestions=built.suggestions,
             metadata=metadata,
         )
-        return resp, results
