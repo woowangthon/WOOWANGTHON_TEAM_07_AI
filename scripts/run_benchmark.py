@@ -28,15 +28,28 @@ def main() -> int:
     parser.add_argument("--engine", choices=["fallback", "llm"], default="fallback")
     parser.add_argument("--only", nargs="*", help="분류(elevator 등) 또는 문항 ID")
     parser.add_argument("--json", help="문항별 결과를 저장할 JSON 경로")
+    parser.add_argument("--timeout", type=float, help="LLM 호출 1회 타임아웃(초) 덮어쓰기. 생략 시 config 값")
+    parser.add_argument("--model", help="LLM 모델 덮어쓰기. 생략 시 config 값")
+    parser.add_argument("--quiet", action="store_true", help="문항별 진행 표시 끄기")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.ERROR)  # 폴백 전환 경고는 결과표에 집계되므로 숨김
-    results = run_cases(load_cases(), make_orchestrator(args.engine), args.only)
+    def progress(r):
+        if not args.quiet:
+            mark = "✅" if r.passed else "❌"
+            print(f"{mark} {r.id} {r.engine}{'/' + r.fallback_reason if r.fallback_reason else ''} {r.latency_ms}ms",
+                  file=sys.stderr, flush=True)
+
+    orchestrator = make_orchestrator(args.engine, args.timeout, args.model)
+    results = run_cases(load_cases(), orchestrator, args.only, progress)
     if not results:
         print("실행할 문항이 없습니다.")
         return 1
     summary = summarize(results)
-    print(format_report(summary, results, args.engine))
+    label = args.engine
+    if args.engine == "llm":
+        label += f" / {orchestrator.client.model} / 호출당 타임아웃 {orchestrator.client.timeout_seconds:g}초"
+    print(format_report(summary, results, label))
     if args.json:
         Path(args.json).write_text(
             json.dumps(results_as_json(summary, results), ensure_ascii=False, indent=2), encoding="utf-8")

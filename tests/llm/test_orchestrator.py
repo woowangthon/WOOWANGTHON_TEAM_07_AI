@@ -129,3 +129,16 @@ def test_sessions_are_separate():
     ask(orch, "강남역 엘리베이터 돼?", session_id="b")
     assert orch.sessions.get("a").last_station_id == "sadang"
     assert orch.sessions.get("b").last_station_id == "gangnam"
+
+
+def test_guard_rejection_without_tools_falls_back():
+    orch, _ = make([
+        tools(call("get_elevator_status", station_id="sadang")),
+        say("사당역 일부 엘리베이터를 이용할 수 없어요."),
+        say("강남역 대체역은 논현역이에요."),  # 도구 없이 지어낸 답
+    ])
+    ask(orch, "사당역 엘리베이터 돼?")
+    res = ask(orch, "거기 대체역은?")
+    assert res.metadata.engine == "fallback"
+    assert res.metadata.fallback_reason == "guard_rejected"
+    assert "방배역" in res.text and "논현역" not in res.text

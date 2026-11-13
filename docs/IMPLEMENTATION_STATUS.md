@@ -3,7 +3,7 @@
 > 이 문서는 **현재 코드가 실제로 어떻게 동작하는지**를 정리한다. 목표 설계는 [`AI_DEVELOPMENT_SPEC.md`](./AI_DEVELOPMENT_SPEC.md)에 있다.
 > 코드 동작을 바꾸면 이 문서의 해당 절도 같이 고친다.
 >
-> 최종 갱신: 2026-11-13 · 단위 테스트 160건 통과
+> 최종 갱신: 2026-11-13 · 단위 테스트 162건 통과
 
 ---
 
@@ -20,12 +20,12 @@
 | LLM 게이트웨이 왕복 데모 | §9 Phase 2 | ✅ 실험용 | `scripts/llm_demo.py` |
 | `/api/chat` 요청/응답 모델 | §4 | ✅ | `src/models.py` |
 | 데이터 소스 인터페이스 (Mock/BE 교체) | — | ✅ Mock 구현만 | `src/data/source.py`, `mock_source.py` |
-| FastAPI `/api/chat` 엔드포인트 (오케스트레이터) | §4 | ✅ 가짜 LLM·폴백 경로로 검증. 실제 게이트웨이 왕복은 미확인 | `src/api/app.py`, `src/llm/orchestrator.py`, `client.py` |
+| FastAPI `/api/chat` 엔드포인트 (오케스트레이터) | §4 | ✅ FactChat `gpt-5.1`로 50문항 왕복 확인. **응답 시간이 목표 초과** ([BENCHMARK](./BENCHMARK.md) §4) | `src/api/app.py`, `src/llm/orchestrator.py`, `client.py` |
 | 액션·카드 조립 (도구 결과 기반) | §4 | ✅ | `src/llm/response_builder.py` |
 | 세션 슬롯 메모리 (TTL 30분) | §5.2 | ✅ 인메모리 | `src/llm/session.py` |
 | LLM 장애 → 폴백 전환 | §6.2 | ✅ | `src/llm/orchestrator.py` |
 | 후처리 환각 검증기 (Guard) | §6.1 | ✅ 역명·시각만 | `src/llm/guard.py` |
-| 50문항 벤치마크 | §8 | 🔄 평가셋·채점·폴백 기준선. LLM 측정은 키 필요 ([BENCHMARK](./BENCHMARK.md)) | `src/eval/`, `scripts/run_benchmark.py` |
+| 50문항 벤치마크 | §8 | ✅ 폴백·`gpt-5.1` 측정, 프롬프트 1차 튜닝 ([BENCHMARK](./BENCHMARK.md)) | `src/eval/`, `scripts/run_benchmark.py` |
 | 백엔드 실데이터·그래프 연동 | §7 | ⏳ 원본 4종 분석 완료, 4종(경로·시간표·빠른하차 등) BE 수집 예정, 연동 전 ([DATA_SPEC](./DATA_SPEC.md)) | `data/` |
 
 ---
@@ -202,6 +202,7 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 | `not_configured` | LLM API 키 없음 |
 | `empty_reply` | 도구 호출도 문장도 없는 응답 |
 | `max_rounds` | 도구 왕복이 `LLM_MAX_TOOL_ROUNDS`를 넘음 |
+| `guard_rejected` | 도구를 하나도 성공적으로 부르지 않고 쓴 문장이 후처리 검증(§4.5)에 걸림 (템플릿을 만들 근거가 없음) |
 | `internal_error` | 도구 실행·응답 조립 중 예기치 못한 예외 |
 
 - 타임아웃은 **호출 1회 기준**이다. 도구 왕복이 여러 번이면 전체 응답 시간은 그보다 길어질 수 있다.
@@ -218,9 +219,10 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N시 반`, `N시`)을 뽑아, 이번 요청의 근거에 있는지 확인한다.
 
 - 근거: 도구 인자·결과의 모든 문자열(역 ID는 역명으로 바꿈), 사용자 문장, 기준 시각.
-- 역명: 근거의 역명 중 하나로 **끝나면** 통과 ("인접한강남역"처럼 앞말이 붙어 잡힌 경우). "대체역", "해당역" 같은 일반 표현과 "지역", "구역"처럼 '역'으로 끝나는 명사는 검사하지 않는다.
+- 역명: 근거의 역명 중 하나로 **끝나면** 통과 ("인접한강남역"처럼 앞말이 붙어 잡힌 경우). "대체역", "해당역", "정차역", "열차역" 같은 일반 표현과 "지역", "구역"처럼 '역'으로 끝나는 명사는 검사하지 않는다.
 - 시각: 근거 시각과 분이 같고 시가 12시간 차이 이내로 같으면 통과 ("3시" = 15:00).
 - 하나라도 걸리면 `metadata.guard_triggered=true`, 문장은 §4.2의 템플릿 문장으로 바꾼다. 카드·액션은 그대로다.
+- 성공한 도구 결과가 하나도 없으면 템플릿도 도움말뿐이므로, 대신 폴백 엔진으로 답한다(`fallback_reason="guard_rejected"`). 벤치마크에서 LLM이 "거기 대체역은?"에 도구 없이 역명을 지어낸 경우가 여기에 해당했다.
 - 검사하지 않는 것: '역' 없이 쓴 역명, 소요 시간·거리 숫자, 엘리베이터 위치 설명.
 
 ### 4.6 데이터 소스 (`data/source.py`)
@@ -256,20 +258,25 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 - 폴백은 노선 필터("2호선 고장 난 역")를 읽지 않고, "신촌에서 그 역까지"처럼 새 역과 지칭어가 함께 나오면 직전 역을 출발역으로 넣는다 ([BENCHMARK](./BENCHMARK.md) EL06, CX09).
 - 폴백의 역 추출은 띄어쓰기가 없는 문장("신도림에서강남역")에서 앞 역을 놓칠 수 있다. LLM 경로는 `resolve_station`이 역 이름만 받으므로 영향 없음.
 - 세션은 서버 프로세스 메모리에만 있다. 서버를 여러 대 띄우거나 재시작하면 이어지지 않는다.
-- 실제 LLM 게이트웨이(FactChat/NVIDIA)로 `/api/chat`을 왕복한 결과는 아직 확인하지 않았다 (테스트는 가짜 LLM 사용).
+- `gpt-5.1`은 한 질문에 P50 약 5초가 걸려, 호출당 3초 타임아웃에서 약 32%가 폴백으로 넘어간다 ([BENCHMARK](./BENCHMARK.md) §4). 모델·타임아웃은 팀 결정 사항이다.
+- LLM이 상태만 조회하고 대체역(`plan_trip`)을 부르지 않으면, 가드가 문장을 바꿔도 템플릿에 대체역 정보가 없다 (벤치마크 CX08).
 
 ---
 
 ## 7. 변경 이력
 
-### 2026-11-13 — 50문항 벤치마크 (이슈 #13), BE OA-15994 확인 결과 반영 (이슈 #1)
+### 2026-11-13 — 50문항 벤치마크와 프롬프트 튜닝 (이슈 #13), BE OA-15994 확인 결과 반영 (이슈 #1)
 
 | 추가·변경 | 내용 |
 |---|---|
 | `src/eval/cases.json`, `benchmark.py`, `scripts/run_benchmark.py` | 명세 §8.1 구성의 50문항 평가셋과 채점(도구·슬롯 F1·카드·문장·응답 시간) |
-| `docs/BENCHMARK.md` | 실행 방법, 채점 기준, 폴백 기준선 결과 (48/50 통과. 실패: 노선 필터 무시 EL06, 지칭어와 새 역이 함께 나올 때 출발·도착 뒤바뀜 CX09) |
+| `docs/BENCHMARK.md` | 실행 방법, 채점 기준, 결과. 폴백 기준선 48/50 (실패: 노선 필터 무시 EL06, 지칭어와 새 역이 함께 나올 때 출발·도착 뒤바뀜 CX09). `gpt-5.1` 튜닝 후 49/50, P50 약 5초 |
+| `src/llm/prompts.py`, 명세 §5.1 | 시스템 프롬프트 수칙 7개 → 10개: 도구 없이 답하지 않기, 역 ID 추측 금지, 지칭어 = 최근 역, 대체역은 detours만, 시각 반올림 금지, 필드 이름 노출 금지 |
+| `src/llm/orchestrator.py` | 도구 결과 없이 가드에 걸리면 폴백 엔진으로 다시 답함 (`fallback_reason="guard_rejected"`) |
+| `src/llm/guard.py` | 일반 표현 추가 (이용·정차·열차·철도·기차·출발지·도착지 + 역) |
+| `scripts/run_benchmark.py` | `--timeout`, `--model` (측정용 덮어쓰기), 문항별 진행 표시, 가드 발동 표현 기록 |
 | `docs/DATA_SPEC.md` §4.2·§4.6·§8 | BE가 확인한 OA-15994 API 응답(갱신 시각·고유 ID 없음, 하루 사이 상태 100건 변경)과 계약 결정 항목 |
-| 테스트 | `tests/eval/test_benchmark.py` 55건 추가 (총 160건). 동작 변경 없음 |
+| 테스트 | `tests/eval/test_benchmark.py` 56건, `test_orchestrator.py` 1건 추가 (총 162건) |
 
 ### 2026-11-13 — `/api/chat` 오케스트레이터, 폴백 전환, 세션, 후처리 검증, 데이터 소스 분리 (이슈 #3, #7, #8, #9, #11)
 

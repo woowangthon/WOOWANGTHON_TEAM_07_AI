@@ -84,3 +84,27 @@ def test_fallback_baseline_runs_all_cases():
 def test_run_cases_can_filter():
     results = run_cases(CASES, make_orchestrator("fallback"), only=["coverage", "DP01"])
     assert sorted(r.id for r in results) == ["CV01", "CV02", "CV03", "CV04", "CV05", "DP01"]
+
+
+def test_guard_detail_is_recorded_for_scored_turn():
+    from AI.src.llm.client import LLMReply, ToolCallRequest
+    from AI.src.llm.orchestrator import ChatOrchestrator
+    from AI.src.llm.session import SessionStore
+
+    class MadeUpTime:
+        def __init__(self):
+            self.n = 0
+
+        def complete(self, messages, tools):
+            self.n += 1
+            if self.n % 2:
+                return LLMReply(tool_calls=[ToolCallRequest(
+                    id="c", name="plan_trip",
+                    arguments='{"start_id": "sindorim", "end_id": "gangnam", "arrive_by": "15:00"}')])
+            return LLMReply(content="14:30에 출발하세요.")  # 도구 결과는 14:18
+
+    doc = {"cases": [{"id": "G1", "category": "departure", "turns": ["신도림에서 강남까지 3시까지?"] * 2,
+                      "expect": {"card_type": ["trip_plan"], "tools": ["plan_trip"], "slots": []}}]}
+    [r] = run_cases(doc, ChatOrchestrator(client=MadeUpTime(), sessions=SessionStore()))
+    assert r.guard_triggered
+    assert len(r.guard_detail) == 1 and "14:30" in r.guard_detail[0]  # 준비 대화의 경고는 세지 않음

@@ -8,7 +8,7 @@
 우왕톤 7팀 "엘리베이터 지하철" 서비스의 **AI 파트**. 휠체어·유모차 이용자에게 지하철 엘리베이터 상태, 고장 시 대체역, 늦지 않는 출발 시각을 챗봇으로 안내한다.
 LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도구가 한다. LLM이 실패하면 규칙 기반 폴백 엔진이 같은 형식으로 답한다.
 
-현재 단계: Phase 1 완료(도구·폴백·테스트). Phase 2·3의 AI 내부 작업(`/api/chat` 오케스트레이터, 세션, 폴백 전환, 후처리 검증) 구현. 실제 LLM 게이트웨이 왕복 검증과 BE API 연동은 남음.
+현재 단계: Phase 1 완료(도구·폴백·테스트). Phase 2·3의 AI 내부 작업(`/api/chat` 오케스트레이터, 세션, 폴백 전환, 후처리 검증)과 50문항 벤치마크 구현. `gpt-5.1`의 응답 시간(P50 약 5초)이 목표를 넘는 문제와 BE API 연동이 남음.
 상세 현황: [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md)
 
 ## 2. 읽는 순서
@@ -38,7 +38,7 @@ LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도�
 
 ```powershell
 pip install -r requirements.txt          # pydantic, openai, fastapi, uvicorn, httpx, pytest
-python -m pytest                         # 전체 테스트 (160건). 작업 전후로 반드시 실행
+python -m pytest                         # 전체 테스트 (162건). 작업 전후로 반드시 실행
 python scripts/run_server.py             # /api/chat 개발 서버 (http://127.0.0.1:8001, 키 없으면 폴백으로 응답)
 python scripts/llm_demo.py "사당역 엘리베이터 돼?"              # FactChat 게이트웨이 왕복 데모 (API 키 필요)
 python scripts/llm_demo.py --provider nvidia "지금 고장난 역 알려줘"
@@ -65,7 +65,7 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 | HTTP 엔드포인트 | `src/api/app.py` | `tests/api/test_chat_api.py`, 명세 §4 |
 | 벤치마크 평가셋·채점 | `src/eval/cases.json`, `benchmark.py` | `tests/eval/test_benchmark.py`, `docs/BENCHMARK.md` (결과는 실제로 돌린 값만 기록) |
 | LLM에 보이는 도구 설명 | `src/tools/registry.py` (`_TOOLS`) | 파라미터 스키마는 `models.py`에서 자동 생성되므로 손으로 쓰지 않는다 |
-| 시스템 프롬프트 | `src/llm/prompts.py` | 명세 §5.1 (같은 문구 유지) |
+| 시스템 프롬프트 | `src/llm/prompts.py` | 명세 §5.1 (같은 문구 유지). 바꾼 뒤 `run_benchmark.py --engine llm`으로 재측정해 `docs/BENCHMARK.md`에 기록 |
 | 폴백 의도 분류·문장 | `src/fallback/engine.py` | `tests/fallback/test_engine.py`, IMPLEMENTATION_STATUS §3 |
 | 게이트웨이·타임아웃·왕복 횟수 설정 | `src/config.py`, `.env.example` | IMPLEMENTATION_STATUS §4.3 |
 | 외부 데이터 원본 추가·교체 | `data/raw/`, `data/sources.json` | `docs/DATA_SPEC.md`, `scripts/check_raw_data.py`로 검증 |

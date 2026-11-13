@@ -15,12 +15,14 @@
 """
 
 import json
+import logging
 import statistics
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from collections import Counter
 from typing import Dict, Iterable, List, Optional, Set
 
-from ..llm.client import LLMUnavailableError
+from ..llm.client import LLMUnavailableError, OpenAICompatClient
 from ..llm.orchestrator import ChatOrchestrator
 from ..llm.session import SessionStore
 from ..models import ChatRequest, ToolCallRecord
@@ -85,6 +87,7 @@ class CaseResult:
     text_ok: bool
     text: str
     problems: List[str] = field(default_factory=list)
+    guard_detail: List[str] = field(default_factory=list)
 
     @property
     def slots_exact(self) -> bool:
@@ -149,16 +152,40 @@ class _NoLLM:
         raise LLMUnavailableError("not_configured", "벤치마크 폴백 기준선")
 
 
-def make_orchestrator(engine: str) -> ChatOrchestrator:
+def make_orchestrator(engine: str, timeout: Optional[float] = None, model: Optional[str] = None) -> ChatOrchestrator:
+    """벤치마크용 오케스트레이터.
+
+    timeout, model은 측정용 덮어쓰기입니다 (운영 설정 config.py는 바꾸지 않음).
+    예: 타임아웃 영향을 빼고 LLM 정확도만 보려면 timeout=30.
+    """
     if engine == "fallback":
         return ChatOrchestrator(client=_NoLLM(), sessions=SessionStore())
     if engine == "llm":
-        return ChatOrchestrator(sessions=SessionStore())
+        client = OpenAICompatClient.from_settings()
+        if timeout is not None:
+            client.timeout_seconds = timeout
+        if model:
+            client.model = model
+        return ChatOrchestrator(client=client, sessions=SessionStore())
     raise ValueError(f"engine은 fallback 또는 llm이어야 합니다: {engine!r}")
 
 
+class _GuardLog(logging.Handler):
+    """오케스트레이터의 후처리 검증 경고를 문항별로 모읍니다."""
+
+    def __init__(self):
+        super().__init__(logging.WARNING)
+        self.messages: List[str] = []
+        self.active = False  # 채점하는 마지막 문장에서만 모읍니다
+
+    def emit(self, record):
+        msg = record.getMessage()
+        if self.active and msg.startswith("후처리 검증 실패"):
+            self.messages.append(msg)
+
+
 def run_cases(cases_doc: dict, orchestrator: ChatOrchestrator,
-              only: Optional[Iterable[str]] = None) -> List[CaseResult]:
+              only: Optional[Iterable[str]] = None, progress=None) -> List[CaseResult]:
     """문항마다 새 세션으로 준비 대화를 보내고 마지막 문장을 채점합니다."""
     only = set(only or [])
     now = cases_doc.get("default_current_time", "12:00")
@@ -168,10 +195,26 @@ def run_cases(cases_doc: dict, orchestrator: ChatOrchestrator,
             continue
         session_id = f"bench-{case['id']}"
         resp = None
-        for message in case["turns"]:
-            resp = orchestrator.handle(ChatRequest(
-                session_id=session_id, message=message, current_time=case.get("current_time", now)))
-        results.append(score_case(case, resp))
+        guard_log = _GuardLog()
+        # 오케스트레이터 경고를 이 수집기로만 받습니다 (콘솔로 흘리지 않음). 끝나면 원래대로 돌립니다.
+        orch_logger = logging.getLogger("AI.src.llm.orchestrator")
+        saved = (orch_logger.level, orch_logger.propagate)
+        orch_logger.setLevel(logging.WARNING)
+        orch_logger.propagate = False
+        orch_logger.addHandler(guard_log)
+        try:
+            for i, message in enumerate(case["turns"]):
+                guard_log.active = i == len(case["turns"]) - 1
+                resp = orchestrator.handle(ChatRequest(
+                    session_id=session_id, message=message, current_time=case.get("current_time", now)))
+        finally:
+            orch_logger.removeHandler(guard_log)
+            orch_logger.level, orch_logger.propagate = saved
+        result = score_case(case, resp)
+        result.guard_detail = guard_log.messages
+        results.append(result)
+        if progress:
+            progress(result)
     return results
 
 
@@ -209,6 +252,7 @@ def summarize(results: List[CaseResult]) -> dict:
         "text_ok_rate": rate(lambda r: r.text_ok),
         "llm_answers": len(llm_answers),
         "fallback_answers": len(results) - len(llm_answers),
+        "fallback_reasons": dict(Counter(r.fallback_reason for r in results if r.engine == "fallback")),
         "guard_triggered": sum(1 for r in llm_answers if r.guard_triggered),
         "latency_ms": {"p50": _pct(latencies, 0.5), "p95": _pct(latencies, 0.95),
                        "mean": int(statistics.mean(latencies)) if latencies else 0},
@@ -242,7 +286,7 @@ def format_report(summary: dict, results: List[CaseResult], engine: str) -> str:
         f"| 슬롯 완전 일치 문항 | {s['slot_exact_rate']:.0%} | — |",
         f"| card_type 정확도 | {s['card_accuracy']:.0%} | — |",
         f"| 문장 검사 통과 | {s['text_ok_rate']:.0%} | — |",
-        f"| LLM 응답 / 폴백 응답 | {s['llm_answers']} / {s['fallback_answers']} | — |",
+        f"| LLM 응답 / 폴백 응답 | {s['llm_answers']} / {s['fallback_answers']} {s['fallback_reasons'] or ''} | — |",
         f"| 후처리 검증 발동 (LLM 응답 중) | {s['guard_triggered']} | 검증 후 환각 0% |",
         f"| 응답 시간 P50 / P95 | {s['latency_ms']['p50']} / {s['latency_ms']['p95']} ms | P95 2,000ms 이내 (폴백 100ms) |",
         "",
@@ -252,12 +296,18 @@ def format_report(summary: dict, results: List[CaseResult], engine: str) -> str:
     for cat, c in s["by_category"].items():
         lines.append(f"| {CATEGORY_LABELS[cat]} | {c['cases']} | {c['pass']} | {c['tools_ok']} | "
                      f"{c['slot_f1']:.2f} | {c['card_ok']} | {c['text_ok']} |")
+    guarded = [r for r in results if r.guard_detail]
+    if guarded:
+        lines += ["", "후처리 검증 발동 문항 (LLM 원문에서 근거 없는 표현):", "", "| ID | 검증 기록 |", "|---|---|"]
+        for r in guarded:
+            lines.append(f"| {r.id} | {'; '.join(r.guard_detail)} |")
     failed = [r for r in results if not r.passed]
     if failed:
         lines += ["", "실패 문항:", "", "| ID | 질문 | 문제 |", "|---|---|---|"]
         for r in failed:
             problems = "; ".join(r.problems).replace("|", "\\|")
-            lines.append(f"| {r.id} | {r.message} | {problems} |")
+            via = f" (폴백: {r.fallback_reason})" if r.engine == "fallback" and r.fallback_reason != "not_configured" else ""
+            lines.append(f"| {r.id} | {r.message} | {problems}{via} |")
     return "\n".join(lines) + "\n"
 
 

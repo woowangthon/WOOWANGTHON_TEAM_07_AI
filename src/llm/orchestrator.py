@@ -5,6 +5,7 @@
     2. LLM ↔ 도구 왕복 (최대 LLM_MAX_TOOL_ROUNDS회). 도구는 tools.registry.execute_tool로 실행한다.
     3. card_type·actions·suggestions는 도구 결과로 코드가 조립한다 (response_builder).
     4. LLM 문장을 후처리 검증(guard)하고, 근거 없는 역명·시각이 있으면 템플릿 문장으로 바꾼다.
+       도구 결과가 하나도 없는데 검증에 걸리면 폴백 엔진으로 다시 답한다.
     5. LLM을 쓸 수 없으면(타임아웃·429·네트워크 오류·키 없음·빈 응답·왕복 초과) 폴백 엔진으로 같은 형식의 응답을 만든다.
     6. 세션 슬롯을 갱신하고 latency_ms를 기록한다.
 """
@@ -118,6 +119,9 @@ class ChatOrchestrator:
         verdict = check_text(text, results, req.message, hhmm)
         if not verdict.ok:
             logger.warning("후처리 검증 실패 — 역명 %s, 시각 %s", verdict.unknown_stations, verdict.unknown_times)
+            if not any(r.ok for r in results):
+                # 도구 결과 없이 지어낸 답이면 템플릿을 만들 근거도 없으므로 규칙 엔진으로 다시 답한다.
+                raise _NeedFallback("guard_rejected")
             text = built.safe_text
 
         metadata = ChatResponseMetadata(engine="llm", fallback_used=False, guard_triggered=not verdict.ok)
