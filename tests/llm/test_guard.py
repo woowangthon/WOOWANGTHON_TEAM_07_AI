@@ -41,5 +41,6 @@ def test_alternative_station_from_tool_is_allowed():
 
 def test_generic_words_and_user_mentions_are_allowed():
     results = [run("resolve_station", query="부평역")]
-    text = "죄송해요, 부평역은 아직 지원하지 않아요. 해당지역 대체역 정보도 없어요. 다른 역을 알려 주세요."
+    text = ("죄송해요, 부평역은 아직 지원하지 않아요. 해당지역 대체역 정보도 없어요. 다른 역을 알려 주세요. "
+            "정차역·열차역·권장역·우회역·추천역 같은 말은 역 이름이 아니에요.")
     assert check_text(text, results, "부평역 엘리베이터 돼?").ok

@@ -123,6 +123,6 @@ python scripts/llm_demo.py --provider nvidia "사당역 엘리베이터 돼?"
 | **Phase 1** | 도구 4종 스키마/Mock 구현, 규칙 기반 폴백 엔진 포팅 | ✅ 완료 |
 | **Phase 2** | FastAPI 오케스트레이터 및 Function Calling 연동 | ✅ `/api/chat`·세션·폴백 전환. FactChat `gpt-5.1` 왕복 확인 |
 | **Phase 3** | 후처리 환각 가드 및 백엔드 도메인 서비스 연동 | 🔄 가드·데이터 소스 인터페이스 구현. BE API 연동은 BE 계약 대기 |
-| **Phase 4** | 50개 벤치마크 평가, 프롬프트 튜닝, FE E2E 통합 테스트 | 🔄 벤치마크·1차 튜닝 (`gpt-5.1` 49/50, 응답 P50 약 5초로 목표 초과). FE 연동 남음 |
+| **Phase 4** | 50개 벤치마크 평가, 프롬프트 튜닝, FE E2E 통합 테스트 | 🔄 벤치마크·튜닝 (`gpt-5.1` 50/50, 응답 P50 약 5.5초로 목표 초과). FE 연동 남음 |
 
 현재는 Mock 데이터로 2호선 순환선 구간만 경로를 계산합니다. 자세한 제약은 [`docs/IMPLEMENTATION_STATUS.md`](./docs/IMPLEMENTATION_STATUS.md)를 참고하세요.
