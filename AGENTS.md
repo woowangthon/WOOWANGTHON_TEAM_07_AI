@@ -38,7 +38,7 @@ LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도�
 
 ```powershell
 pip install -r requirements.txt          # pydantic, openai, fastapi, uvicorn, httpx, pytest
-python -m pytest                         # 전체 테스트 (162건). 작업 전후로 반드시 실행
+python -m pytest                         # 전체 테스트 (167건). 작업 전후로 반드시 실행
 python scripts/run_server.py             # /api/chat 개발 서버 (http://127.0.0.1:8001, 키 없으면 폴백으로 응답)
 python scripts/llm_demo.py "사당역 엘리베이터 돼?"              # FactChat 게이트웨이 왕복 데모 (API 키 필요)
 python scripts/llm_demo.py --provider nvidia "지금 고장난 역 알려줘"

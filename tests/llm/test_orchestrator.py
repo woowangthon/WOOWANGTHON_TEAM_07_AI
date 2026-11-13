@@ -142,3 +142,69 @@ def test_guard_rejection_without_tools_falls_back():
     assert res.metadata.engine == "fallback"
     assert res.metadata.fallback_reason == "guard_rejected"
     assert "방배역" in res.text and "논현역" not in res.text
+
+
+def test_missing_alternative_is_supplemented_for_broken_station():
+    # 벤치마크 CX08: 고장 역 상태만 조회하고 대체역은 부르지 않은 경우
+    orch, _ = make([
+        tools(call("get_elevator_status", station_id="sillim")),
+        say("신림역 6번 출구 엘리베이터를 이용할 수 없어요."),
+    ])
+    res = ask(orch, "신림역 엘리베이터 돼?")
+    assert res.metadata.guard_triggered is False
+    assert [t.name for t in res.tool_calls] == ["get_elevator_status", "plan_trip"]
+    assert res.tool_calls[1].args == {"start_id": "sillim", "end_id": "sillim"}
+    assert res.text.startswith("신림역 6번 출구")
+    assert "추천 대체역: 신대방역" in res.text
+    assert res.actions[0].type == "showAlternative"
+    assert res.actions[0].payload["to"] == "sindaebang"
+
+
+def test_supplemented_alternative_is_in_template_when_guard_fails():
+    orch, _ = make([
+        tools(call("get_elevator_status", station_id="sillim")),
+        say("신림역은 고장이라 사당역을 이용하세요."),  # 근거 없는 역
+    ])
+    res = ask(orch, "거기 말고 다른 역은?")
+    assert res.metadata.guard_triggered is True
+    assert "사당역" not in res.text and "신대방역" in res.text
+
+
+def test_no_supplement_when_alternative_already_called_or_station_ok():
+    orch, _ = make([
+        tools(call("get_elevator_status", station_id="sillim"),
+              call("plan_trip", start_id="sillim", end_id="sillim")),
+        say("신림역 대신 신대방역을 이용하세요."),
+        tools(call("get_elevator_status", station_id="gangnam")),
+        say("강남역 엘리베이터는 모두 정상이에요."),
+    ])
+    res = ask(orch, "신림역 엘리베이터 돼?", session_id="a")
+    assert [t.name for t in res.tool_calls] == ["get_elevator_status", "plan_trip"]
+    assert res.text.count("신대방역") == 1
+    res = ask(orch, "강남역 엘리베이터 돼?", session_id="b")
+    assert [t.name for t in res.tool_calls] == ["get_elevator_status"]
+
+
+def test_no_supplement_for_route_question():
+    orch, _ = make([
+        tools(call("get_elevator_status", station_id="sadang"),
+              call("plan_trip", start_id="sadang", end_id="gangnam", arrive_by="15:00")),
+        say("사당역에서 강남역까지 14:34에 출발하세요."),
+    ])
+    res = ask(orch, "사당에서 강남까지 3시까지 가려면?")
+    assert [t.name for t in res.tool_calls] == ["get_elevator_status", "plan_trip"]
+    assert res.card_type == "trip_plan"
+
+
+def test_guard_rejection_with_only_resolve_station_falls_back():
+    # 벤치마크 CX08 (2차): 역 확인만 하고 근거 없는 역명을 말한 경우 → 템플릿이 도움말뿐이므로 폴백
+    orch, _ = make([
+        tools(call("get_elevator_status", station_id="sillim")),
+        say("신림역 6번 출구 엘리베이터를 이용할 수 없어요."),
+        tools(call("resolve_station", query="신림")),
+        say("강남역을 이용하세요."),
+    ])
+    ask(orch, "신림역 엘리베이터 돼?")
+    res = ask(orch, "거기 말고 다른 역은?")
+    assert res.metadata.fallback_reason == "guard_rejected"
+    assert "신대방역" in res.text and "강남역" not in res.text
