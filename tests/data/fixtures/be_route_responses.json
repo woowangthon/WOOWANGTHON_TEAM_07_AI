@@ -1,0 +1,687 @@
+{
+  "_source": "합성 응답: BE docs/api-contract.md §8.4 응답 형식과 BE app/services/status_messages.py 문구로 만든 /api/routes 응답이다. 실제 서버 녹화가 아니다. 역 ID·역명·역 상태는 be_demo_responses.json(실제 녹화)에서 가져왔고, 소요 시간은 BE 기본 가중치(역 간 2분, 환승 5분)로 계산했다. 404 경로 없음은 테스트 코드에서 만든다.",
+  "routes": {
+    "43-25": {
+      "from_station": {
+        "station_id": 43,
+        "station_name": "신도림"
+      },
+      "to_station": {
+        "station_id": 25,
+        "station_name": "잠실(송파구청)"
+      },
+      "stations": [
+        {
+          "station_id": 43,
+          "station_name": "신도림",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 4,
+            "unknown_elevator_count": 4
+          }
+        },
+        {
+          "station_id": 42,
+          "station_name": "대림(구로구청)",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            },
+            {
+              "line_id": "7",
+              "line_name": "7호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 41,
+          "station_name": "구로디지털단지",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 40,
+          "station_name": "신대방",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 39,
+          "station_name": "신림",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 38,
+          "station_name": "봉천",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 37,
+          "station_name": "서울대입구(관악구청)",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 36,
+          "station_name": "낙성대(강감찬)",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 35,
+          "station_name": "사당",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            },
+            {
+              "line_id": "4",
+              "line_name": "4호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 5,
+            "unknown_elevator_count": 5
+          }
+        },
+        {
+          "station_id": 34,
+          "station_name": "방배",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 33,
+          "station_name": "서초",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 32,
+          "station_name": "교대(법원, 검찰청)",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            },
+            {
+              "line_id": "3",
+              "line_name": "3호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 31,
+          "station_name": "강남",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": "UNAVAILABLE",
+            "data_fresh": false,
+            "total_elevator_count": 5,
+            "unknown_elevator_count": 4
+          }
+        },
+        {
+          "station_id": 30,
+          "station_name": "역삼",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 29,
+          "station_name": "선릉",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 28,
+          "station_name": "삼성(무역센터)",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 27,
+          "station_name": "종합운동장",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 26,
+          "station_name": "잠실새내",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 25,
+          "station_name": "잠실(송파구청)",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            },
+            {
+              "line_id": "8",
+              "line_name": "8호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        }
+      ],
+      "transfer_count": 0,
+      "total_minutes": 36,
+      "estimated": true,
+      "timeline": [
+        {
+          "kind": "RIDE",
+          "label": "2호선 신도림 → 잠실(송파구청)",
+          "minutes": 36,
+          "line_id": "2",
+          "line_name": "2호선",
+          "from_station": {
+            "station_id": 43,
+            "station_name": "신도림"
+          },
+          "to_station": {
+            "station_id": 25,
+            "station_name": "잠실(송파구청)"
+          },
+          "stops": 18,
+          "station": null,
+          "from_line_id": null,
+          "to_line_id": null
+        }
+      ],
+      "elevator_warning": {
+        "status": "WARNING",
+        "items": [
+          {
+            "station_id": 43,
+            "station_name": "신도림",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 42,
+            "station_name": "대림(구로구청)",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 41,
+            "station_name": "구로디지털단지",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 40,
+            "station_name": "신대방",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 39,
+            "station_name": "신림",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 38,
+            "station_name": "봉천",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 37,
+            "station_name": "서울대입구(관악구청)",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 36,
+            "station_name": "낙성대(강감찬)",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 35,
+            "station_name": "사당",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 34,
+            "station_name": "방배",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 33,
+            "station_name": "서초",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 32,
+            "station_name": "교대(법원, 검찰청)",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 31,
+            "station_name": "강남",
+            "kind": "UNAVAILABLE",
+            "message": "확인된 엘리베이터가 모두 가동 안됨"
+          },
+          {
+            "station_id": 30,
+            "station_name": "역삼",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 29,
+            "station_name": "선릉",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 28,
+            "station_name": "삼성(무역센터)",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 27,
+            "station_name": "종합운동장",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 26,
+            "station_name": "잠실새내",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 25,
+            "station_name": "잠실(송파구청)",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          }
+        ],
+        "message": "경로 위 일부 역에서 엘리베이터가 가동 안됨이거나 일부만 가동중임"
+      },
+      "limitations": [
+        "소요 시간은 역 간 이동과 환승에 고정 시간을 가정한 추정값이며 실제 열차 시간표와 다를 수 있음",
+        "역 간 연결은 열차 시간표에서 추출한 것이며 공식 인접역 자료로 검증되지 않음",
+        "엘리베이터만으로 이동할 수 있는 환승·출입 동선인지는 검증되지 않음"
+      ]
+    },
+    "30-77": {
+      "from_station": {
+        "station_id": 30,
+        "station_name": "역삼"
+      },
+      "to_station": {
+        "station_id": 77,
+        "station_name": "고속터미널"
+      },
+      "stations": [
+        {
+          "station_id": 30,
+          "station_name": "역삼",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 31,
+          "station_name": "강남",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": "UNAVAILABLE",
+            "data_fresh": false,
+            "total_elevator_count": 5,
+            "unknown_elevator_count": 4
+          }
+        },
+        {
+          "station_id": 32,
+          "station_name": "교대(법원, 검찰청)",
+          "lines": [
+            {
+              "line_id": "2",
+              "line_name": "2호선"
+            },
+            {
+              "line_id": "3",
+              "line_name": "3호선"
+            }
+          ],
+          "is_transfer": true,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        },
+        {
+          "station_id": 77,
+          "station_name": "고속터미널",
+          "lines": [
+            {
+              "line_id": "3",
+              "line_name": "3호선"
+            },
+            {
+              "line_id": "7",
+              "line_name": "7호선"
+            }
+          ],
+          "is_transfer": false,
+          "station_status": {
+            "status": null,
+            "data_fresh": false,
+            "total_elevator_count": 0,
+            "unknown_elevator_count": 0
+          }
+        }
+      ],
+      "transfer_count": 1,
+      "total_minutes": 11,
+      "estimated": true,
+      "timeline": [
+        {
+          "kind": "RIDE",
+          "label": "2호선 역삼 → 교대(법원, 검찰청)",
+          "minutes": 4,
+          "line_id": "2",
+          "line_name": "2호선",
+          "from_station": {
+            "station_id": 30,
+            "station_name": "역삼"
+          },
+          "to_station": {
+            "station_id": 32,
+            "station_name": "교대(법원, 검찰청)"
+          },
+          "stops": 2,
+          "station": null,
+          "from_line_id": null,
+          "to_line_id": null
+        },
+        {
+          "kind": "TRANSFER",
+          "label": "교대(법원, 검찰청)에서 2호선 → 3호선 환승",
+          "minutes": 5,
+          "line_id": null,
+          "line_name": null,
+          "from_station": null,
+          "to_station": null,
+          "stops": null,
+          "station": {
+            "station_id": 32,
+            "station_name": "교대(법원, 검찰청)"
+          },
+          "from_line_id": "2",
+          "to_line_id": "3"
+        },
+        {
+          "kind": "RIDE",
+          "label": "3호선 교대(법원, 검찰청) → 고속터미널",
+          "minutes": 2,
+          "line_id": "3",
+          "line_name": "3호선",
+          "from_station": {
+            "station_id": 32,
+            "station_name": "교대(법원, 검찰청)"
+          },
+          "to_station": {
+            "station_id": 77,
+            "station_name": "고속터미널"
+          },
+          "stops": 1,
+          "station": null,
+          "from_line_id": null,
+          "to_line_id": null
+        }
+      ],
+      "elevator_warning": {
+        "status": "WARNING",
+        "items": [
+          {
+            "station_id": 30,
+            "station_name": "역삼",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 31,
+            "station_name": "강남",
+            "kind": "UNAVAILABLE",
+            "message": "확인된 엘리베이터가 모두 가동 안됨"
+          },
+          {
+            "station_id": 32,
+            "station_name": "교대(법원, 검찰청)",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          },
+          {
+            "station_id": 77,
+            "station_name": "고속터미널",
+            "kind": "UNCONFIRMED",
+            "message": "엘리베이터 상태를 확인하지 못했거나 일부만 확인됨"
+          }
+        ],
+        "message": "경로 위 일부 역에서 엘리베이터가 가동 안됨이거나 일부만 가동중임"
+      },
+      "limitations": [
+        "소요 시간은 역 간 이동과 환승에 고정 시간을 가정한 추정값이며 실제 열차 시간표와 다를 수 있음",
+        "역 간 연결은 열차 시간표에서 추출한 것이며 공식 인접역 자료로 검증되지 않음",
+        "엘리베이터만으로 이동할 수 있는 환승·출입 동선인지는 검증되지 않음"
+      ]
+    }
+  }
+}

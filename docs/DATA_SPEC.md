@@ -379,7 +379,7 @@ CSV(이 레포 `data/raw/`, BE 확인 기준 11-12 작성 파일)와 API(11-13 �
 | ~~엘리베이터 ID~~ | AI·BE | BE `elevator_id`(정수)를 `segment_id`에 문자열로 쓴다 |
 | ~~출발 시각 계산식과 대기 시간 기본값~~ | 팀·BE·AI | **5분으로 통일 결정** (팀, 2026-11-14). BE `/api/departure-time`의 `buffer_minutes` 기본값 0분 → 5분 변경을 BE #14에 요청. 바뀔 때까지 AI가 5분을 명시해 보낸다. 나머지(도보 7·진입 3·출구 3)는 같음 |
 | `/api/elevators/status`의 노선 필터 | BE | 응답에 노선이 없어 "2호선 고장 역"에 역마다 추가 호출이 필요. BE #14에 요청 |
-| 경로 API(BE #37)와 `travel_minutes` 출처 | BE | #37 전까지 검증된 이동 시간이 없음. #37 응답을 `/api/departure-time`에 넣는 흐름인지 BE #14에 확인 요청 |
+| ~~경로 API(BE #37)와 `travel_minutes` 출처~~ | BE | **확정** (BE D17): `/api/routes`의 `total_minutes`를 `/api/departure-time`의 `travel_minutes`로 넘긴다. AI 이슈 #6에서 연동 |
 | OA-21212가 종료된 서비스인지, 계속 받을 수 있는지 | BE | 공식 페이지에 종료 안내 문구가 보임 |
 | OA-22740, OA-22725 공식 페이지 정보(갱신 주기 등) | BE | 2026-11-13 접속 오류로 미확인 |
 | 수집 예정 4종의 실제 응답 컬럼 | BE | 받은 뒤 `sources.json`·§4.7 갱신 |
@@ -390,7 +390,7 @@ CSV(이 레포 `data/raw/`, BE 확인 기준 11-12 작성 파일)와 API(11-13 �
 | 휠체어리프트(`WL`)를 휠체어 경로에 포함할지 | 팀 | |
 | ~~`ElevatorSegment`에 `UNKNOWN` 추가~~ | AI | 2026-11-14 반영 (명세 §3.2). `concourse` 분류·추천 칸·문 필드는 BE 응답에 원천 정보가 없어 보류 |
 | ~~AI가 읽을 방식: 읽기 전용 DB 뷰 vs BE API~~ | AI·BE | **BE API 호출로 확정** (2026-11-14). BE가 역·엘리베이터·대체역·출발 시각 API를 구현했고, `BE/docs/demo-handoff.md` "AI 인계"가 이 API를 AI 입력으로 지정함 |
-| ~~경로·대체역 계산을 AI/BE 중 어디서~~ | AI·BE | **BE로 확정** (위와 같음). 대체역은 BE BFS(#33), 출발 시각은 BE 역산(#39). 경로(#37)는 미구현이라 그동안 AI Mock 계산을 "추정"으로 안내. BE 장애 시 Mock 값으로 답하지 않고 "확인할 수 없음"으로 안내 (AI 이슈 #10) |
+| ~~경로·대체역 계산을 AI/BE 중 어디서~~ | AI·BE | **BE로 확정** (위와 같음). 대체역은 BE BFS(#33), 출발 시각은 BE 역산(#39). 경로는 BE `GET /api/routes`(#37, AI 이슈 #6에서 연동). BE 장애 시 Mock 값으로 답하지 않고 "확인할 수 없음"으로 안내 (AI 이슈 #10) |
 | 커버리지 밖이 된 신도림 1호선 처리, 기본 출발역 | 팀 | §5 |
 
 ---
@@ -405,8 +405,8 @@ CSV(이 레포 `data/raw/`, BE 확인 기준 11-12 작성 파일)와 API(11-13 �
 | `get_elevator_status` | `GET /api/stations/{id}/elevators` | ✅ 연동. 판정 규칙은 BE §6.2와 같음 |
 | `get_broken_elevators` | `GET /api/elevators/status` | ✅ 연동. 노선은 역 목록의 노선으로 거름 |
 | `plan_trip` 대체역 | `GET /api/stations/{id}/alternatives` | ✅ 연동 (BE 계약 §8.1은 초안) |
-| `plan_trip` 경로·소요 시간 | `GET /api/routes` (BE #37) | ❌ BE 미구현. AI Mock 2호선 계산을 추정으로 안내 |
-| `plan_trip` 출발 시각 | `POST /api/departure-time` | ✅ 연동 (역산 모드만, AI 이슈 #6). 대기 시간 기본값 통일 전이라 AI가 여유 5분(배차 3 + 여유 2)·도보·진입·출구 값을 모두 명시해서 보낸다(BE 기본 `buffer_minutes` 0분을 쓰지 않음). 이동 시간은 #37 전까지 AI Mock 2호선 계산값. 순방향(출발 시각 기준)은 BE API가 없어 AI 계산 |
+| `plan_trip` 경로·소요 시간 | `GET /api/routes` (BE #37) | ✅ 연동 (AI 이슈 #6). 환승 포함 경로, 추정 소요 시간(역 간 2분·환승 5분 가정), 경로 엘리베이터 경고, `limitations`를 그대로 전함. 404는 경로 없음(`is_possible=false`). 계약 형식 스텁으로만 테스트, 실제 서버 미확인 |
+| `plan_trip` 출발 시각 | `POST /api/departure-time` | ✅ 연동 (역산 모드만, AI 이슈 #6). 이동 시간 = 경로 `total_minutes`(D17), 역 ID 함께 보냄(시간표 열차 선택 가능). 여유 5분·도보 7·진입 3·출구 3은 BE 기본값(D15)과 같지만 명시해서 보낸다. 순방향(출발 시각 기준)은 BE API가 없어 BE 경로 소요 시간으로 AI 계산. 운행 시간 밖 판정 값은 BE에 없음 |
 | (없음) | `GET /api/stations/{id}/arrivals` | 사용 안 함. 외부 출처 미연동으로 항상 `UNCONFIRMED` |
 
 BE 데이터에서 확인한 사실 (데모 DB, 2026-11-14):

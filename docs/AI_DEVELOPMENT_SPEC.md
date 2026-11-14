@@ -252,7 +252,8 @@ sequenceDiagram
       ],
       "total_stops": 12,
       "transfers": 0,
-      "total_duration_minutes": 37
+      "total_duration_minutes": 24,   # 열차 이동 + 환승(분). BE 경로면 GET /api/routes의 total_minutes (추정값)
+      "transfer_station_ids": []      # 환승역 ID (경로 순서)
     },
     "detours": [                   # 출발/환승/도착역 엘리베이터 불가에 따른 우회 대체역 정보
       {
@@ -284,10 +285,16 @@ sequenceDiagram
     "limitations": [               # 사용자에게 그대로 전할 한계 안내
       "열차 시간표와 실제 경로 탐색을 쓰지 않은 추정 계산이며 탑승 가능한 열차는 확인되지 않음"
     ],
-    "time_source": "AI"            # 시각을 계산한 곳: "AI"(도구 직접 계산) | "BE"(BE /api/departure-time 역산)
+    "time_source": "AI",           # 시각을 계산한 곳: "AI"(도구 직접 계산) | "BE"(BE /api/departure-time 역산)
+    "route_source": "AI",          # 경로를 계산한 곳: "AI"(Mock 2호선) | "BE"(BE GET /api/routes)
+    "elevator_warning": null,      # BE 경로면 {"status": "WARNING"|"UNCONFIRMED"|"CLEAR",
+                                   #   "items": [{"station_id", "station_name", "kind", "message"}], "message"}
+    "timetable_used": false,       # BE가 시간표로 열차를 골랐는지 (true여도 계획 시각, 지연 미반영)
+    "selected_train": null         # {"train_no", "boarding_time": "HH:MM", "alighting_time": "HH:MM", "direction_inferred": true}
   }
   ```
-- 역산 모드에서 BE 데이터 소스를 쓰면 출발 시각은 BE `POST /api/departure-time`이 계산한다(`time_source="BE"`). 분 값은 모두 AI 값을 보내므로 시각은 직접 계산과 같고, `limitations`는 BE 문구(시간표 미사용, 이동 시간 외부 입력, 도보·진입·출구 추정)로 바뀐다.
+- BE 데이터 소스를 쓰면 경로는 BE `GET /api/routes`(환승 포함, 추정 소요 시간)이고(`route_source="BE"`), BE가 경로를 찾지 못하면(404) `is_possible=false`다. 경유·환승역의 엘리베이터 경고는 `elevator_warning`에 그대로 담고, 고장·일부 고장 역은 `warnings`, 미확인 환승역은 `limitations`로 알린다.
+- 역산 모드에서 BE 데이터 소스를 쓰면 출발 시각은 BE `POST /api/departure-time`이 계산한다(`time_source="BE"`). 이동 시간은 BE 경로 `total_minutes`(BE 결정 D17), 나머지 분 값은 AI 값이며 출발·도착 역 ID도 보낸다. `limitations`는 BE 문구(시간표 미사용 또는 시간표 계획 시각, 이동 시간 외부 입력, 도보·진입·출구 추정, 경로 엘리베이터 경고, 경로 추정 등)를 바꾸지 않고 전한다. BE 서버 시계 기준 "이미 지났음" 문구만 빼고 `is_late`로 알린다.
 - 출발역·도착역 상태가 `UNKNOWN`이면 대체역을 붙이지 않고 `limitations`에 "○○역 엘리베이터 상태를 확인하지 못함"을 넣는다. 대체역은 이용 불가가 확인된 경우에만 찾는다.
 - 출발역=도착역(대체역만 묻는 경우)은 대체역 후보를 모두 `detours`에 담는다 (BE 연동 시 BE 추천 순).
 

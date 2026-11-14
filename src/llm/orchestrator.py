@@ -81,6 +81,12 @@ def _append_missing_limitations(text: str, limitations: List[str]) -> str:
     return "\n".join([text] + lines) if lines else text
 
 
+def _append_missing_warnings(text: str, warnings: List[str]) -> str:
+    """경로 결과의 경고(출발·도착·경유·환승역 엘리베이터 고장 등)가 LLM 문장에 없으면 템플릿과 같은 형식으로 덧붙입니다."""
+    missing = [w for w in dict.fromkeys(warnings) if w and w not in text]
+    return "\n".join([text] + [f"⚠️ {w}" for w in missing]) if missing else text
+
+
 DATA_TOOLS = {"get_elevator_status", "get_broken_elevators", "plan_trip"}
 
 
@@ -268,6 +274,7 @@ class ChatOrchestrator:
             text = built.safe_text
         else:
             text = _append_missing_alternatives(text, supplements)
+            text = _append_missing_warnings(text, built.warnings)
             text = _append_missing_limitations(text, built.limitations)
 
         return self._make_response(req, text, built, results, guard_triggered=not verdict.ok), results
