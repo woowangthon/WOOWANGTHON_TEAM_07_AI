@@ -76,6 +76,16 @@ class Settings(BaseModel):
         description="llm: 도구 결과를 LLM에 돌려줘 문장 생성 / template: 데이터 도구 실행 후 템플릿 문장으로 바로 답함 (왕복 1회 절약)",
     )
 
+    # BE API 데이터 소스 (AI_DATA_SOURCE=be일 때). 이슈 #4, #5
+    BE_API_BASE_URL: str = Field(
+        default_factory=lambda: _env("BE_API_BASE_URL", "http://127.0.0.1:8000"),
+        description="BE 서버 주소 (BE/docs/frontend-integration.md의 Base URL)",
+    )
+    BE_API_TIMEOUT_SECONDS: float = Field(
+        default_factory=lambda: float(_env("BE_API_TIMEOUT_SECONDS", "2.0")),
+        description="BE API 호출 1회 타임아웃 (초). 넘으면 '확인할 수 없음'으로 안내",
+    )
+
     # HTTP 서버
     CORS_ALLOW_ORIGINS: str = Field(
         default_factory=lambda: _env("CORS_ALLOW_ORIGINS", "*"),
