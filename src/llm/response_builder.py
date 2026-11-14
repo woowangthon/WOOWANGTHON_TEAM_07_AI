@@ -48,7 +48,7 @@ class BuiltResponse:
     actions: List[ActionPayload]
     suggestions: List[str]
     safe_text: str
-    data_updated_at: Optional[str] = None
+    data_updated_at: Optional[str] = None  # 고른 도구 결과의 updated_at. 수집 시각이 없는 결과(경로·도움말 등)는 None
     limitations: List[str] = field(default_factory=list)  # safe_text에 들어간 한계 안내 (LLM 문장에도 강제)
 
 

@@ -217,7 +217,7 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 | 6 | `resolve_station` NOT_FOUND | `need_station` | — |
 | 7 | 도구 호출 없음 | `help` | — |
 
-`metadata.data_updated_at`은 고른 결과에 `updated_at`이 있으면 그 값, 없으면 응답 생성 시각이다.
+`metadata.data_updated_at`은 고른 결과의 `updated_at`(데이터 수집 시각)이다. `elevator_status`(`get_elevator_status`)와 `outages_list`·`outages_empty`(`get_broken_elevators`)만 값이 있고, 수집 시각이 없는 결과(엘리베이터 데이터가 없는 역, `trip_plan`·`trip_unsupported`, 대체역만 답한 응답, `out_of_coverage`, `need_station`, `help`, `data_unavailable`)는 `None`이다. 응답 생성 시각으로 채우지 않는다. 폴백 엔진도 같은 규칙이다 (`tests/llm/test_metadata_updated_at.py`).
 
 ### 4.3 폴백 전환
 
@@ -300,7 +300,8 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 - 도구 결과의 `limitations`는 템플릿·폴백 문장 끝에 "※ …" 줄로 붙이고, LLM 문장에도 없으면 덧붙인다 (§4.1).
 - 프롬프트 수칙 11: `UNKNOWN`이거나 `data_fresh=false`면 "정상", "이용 가능"이라고 단정하지 않고, `limitations`는 빼거나 바꾸지 않는다.
 - 데이터 소스(BE) 장애: 도구 실행기가 `data_unavailable` 표시를 붙이고, 오케스트레이터는 LLM 문장이 있어도 버리고 "지금은 역·엘리베이터 정보를 확인할 수 없습니다. 이전 정보나 추정값으로 안내하지 않으니 …"로 답한다 (`card_type="data_unavailable"`, `fallback_reason="data_unavailable"`). 역 사전 확인이나 폴백 엔진에서 나도 같다.
-- 남은 것: `metadata.data_updated_at`은 고른 결과의 `updated_at`(BE `fetched_at`)이지만, 없으면 아직 응답 생성 시각이다. "실시간" 표현은 팀 결정 대기.
+- `metadata.data_updated_at`은 고른 결과의 `updated_at`(BE는 설비별 `fetched_at` 중 가장 최근 값, Mock은 Mock 기준 시각)이고, 없으면 `None`이다. 응답 생성 시각으로 채우지 않는다 (§4.2). LLM·폴백 경로 모두 같다.
+- 남은 것: "실시간" 표현은 팀 결정 대기.
 
 ---
 

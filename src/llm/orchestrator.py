@@ -275,9 +275,9 @@ class ChatOrchestrator:
     @staticmethod
     def _make_response(req: ChatRequest, text: str, built, results: List[ToolResult],
                        guard_triggered: bool) -> ChatResponse:
-        metadata = ChatResponseMetadata(engine="llm", fallback_used=False, guard_triggered=guard_triggered)
-        if built.data_updated_at:
-            metadata.data_updated_at = built.data_updated_at
+        # 수집 시각을 모르면 None으로 둔다 (응답 생성 시각으로 채우면 데이터가 방금 갱신된 것처럼 보임)
+        metadata = ChatResponseMetadata(engine="llm", fallback_used=False, guard_triggered=guard_triggered,
+                                        data_updated_at=built.data_updated_at)
         return ChatResponse(
             session_id=req.session_id,
             text=text,

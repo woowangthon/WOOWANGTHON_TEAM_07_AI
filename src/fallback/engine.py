@@ -211,10 +211,12 @@ class FallbackEngine:
     # 응답 생성
     # -------------------------------------------------------------------------
     @staticmethod
-    def _resp(session_id: str, text: str, card_type: str, **kw) -> ChatResponse:
+    def _resp(session_id: str, text: str, card_type: str,
+              data_updated_at: Optional[str] = None, **kw) -> ChatResponse:
+        """data_updated_at: 답에 쓴 도구 결과의 updated_at. 수집 시각을 모르면 None (현재 시각으로 채우지 않음)."""
         return ChatResponse(
             session_id=session_id, text=text, card_type=card_type,
-            metadata=ChatResponseMetadata(engine="fallback", fallback_used=True),
+            metadata=ChatResponseMetadata(engine="fallback", fallback_used=True, data_updated_at=data_updated_at),
             **kw,
         )
 
@@ -315,7 +317,7 @@ class FallbackEngine:
             return cls._resp(
                 session_id,
                 "\n".join([f"현재 {scope}에서 엘리베이터 이용 불가가 확인된 역은 없습니다."] + limit_lines),
-                "outages_empty", tool_calls=tool_calls,
+                "outages_empty", res.updated_at, tool_calls=tool_calls,
                 suggestions=["강남역 엘리베이터 돼?", "사용법 알려줘"],
             )
         top = res.outages[0]
@@ -325,7 +327,7 @@ class FallbackEngine:
             session_id,
             "\n".join([f"현재 {line_id + '호선에서 ' if line_id else ''}엘리베이터 이용이 어려운 것으로 확인된 역은 "
                        f"총 {res.count}곳입니다: {names}{more}."] + limit_lines),
-            "outages_list",
+            "outages_list", res.updated_at,
             tool_calls=tool_calls,
             actions=[
                 ActionPayload(type="openStation", label=f"{o.station_name}역 상세 보기",
@@ -434,6 +436,6 @@ class FallbackEngine:
         text = "\n".join([text] + format_limitations(limitations))
 
         return cls._resp(
-            session_id, text, "elevator_status", actions=actions, tool_calls=tool_calls,
+            session_id, text, "elevator_status", status.updated_at, actions=actions, tool_calls=tool_calls,
             suggestions=[f"{name}역까지 가려면 언제 출발해?", "지금 고장난 역 알려줘"],
         )

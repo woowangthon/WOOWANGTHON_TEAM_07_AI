@@ -359,7 +359,7 @@ Content-Type: application/json
 | `fallback_used` | 폴백 엔진으로 답했는지 |
 | `fallback_reason` | 폴백 사유. `timeout`, `rate_limit`, `network`, `server_error`, `api_error`, `not_configured`, `empty_reply`, `max_rounds`, `guard_rejected`, `internal_error`, `data_unavailable`(데이터 소스(BE) 장애. `card_type="data_unavailable"`, 이전 값·추정값으로 답하지 않음). LLM 응답이면 `null` |
 | `guard_triggered` | LLM 문장이 후처리 검증(§6.1)에 걸려 도구 결과 기반 템플릿 문장으로 바뀌었는지 |
-| `data_updated_at` | 응답 근거 데이터의 기준 시각 (ISO-8601) |
+| `data_updated_at` | 응답 근거 데이터의 **수집 시각** (도구 결과의 `updated_at`, ISO-8601 KST `+09:00`). nullable: 근거 데이터에 수집 시각이 없으면(경로 안내, 엘리베이터 데이터가 없는 역, 도움말, 지원 범위 밖, `data_unavailable` 등) `null`. 응답 생성 시각으로 채우지 않는다 (오래된 데이터가 방금 갱신된 것처럼 보이지 않게) |
 
 ---
 
