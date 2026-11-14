@@ -43,7 +43,7 @@ class Settings(BaseModel):
     FACTCHAT_BASE_URL: str = Field(
         default_factory=lambda: _env("FACTCHAT_BASE_URL", "https://factchat-cloud.mindlogic.ai/v1/gateway")
     )
-    FACTCHAT_MODEL: str = Field(default_factory=lambda: _env("FACTCHAT_MODEL", "gpt-5.1"))
+    FACTCHAT_MODEL: str = Field(default_factory=lambda: _env("FACTCHAT_MODEL", "gemini-3.5-flash-lite"))
 
     # NVIDIA API 게이트웨이 (OpenAI 호환 API, 비교 실험용)
     NVIDIA_API_KEY: str = Field(default_factory=lambda: _env("NVIDIA_API_KEY"))
@@ -68,11 +68,11 @@ class Settings(BaseModel):
 
     # 응답 속도 옵션 (이슈 #17). 기본값은 기존 동작. 효과는 docs/BENCHMARK.md
     LLM_PRERESOLVE: bool = Field(
-        default_factory=lambda: _env("LLM_PRERESOLVE", "false").strip().lower() in ("1", "true", "yes", "on"),
+        default_factory=lambda: _env("LLM_PRERESOLVE", "true").strip().lower() in ("1", "true", "yes", "on"),
         description="문장 속 역을 코드가 먼저 resolve_station으로 확인해 프롬프트에 넣음 (LLM 왕복 1회 절약)",
     )
     LLM_ANSWER_MODE: str = Field(
-        default_factory=lambda: _env("LLM_ANSWER_MODE", "llm").strip().lower(),
+        default_factory=lambda: _env("LLM_ANSWER_MODE", "template").strip().lower(),
         description="llm: 도구 결과를 LLM에 돌려줘 문장 생성 / template: 데이터 도구 실행 후 템플릿 문장으로 바로 답함 (왕복 1회 절약)",
     )
 
@@ -84,6 +84,11 @@ class Settings(BaseModel):
     BE_API_TIMEOUT_SECONDS: float = Field(
         default_factory=lambda: float(_env("BE_API_TIMEOUT_SECONDS", "2.0")),
         description="BE API 호출 1회 타임아웃 (초). 넘으면 '확인할 수 없음'으로 안내",
+    )
+
+    BE_ROUTE_ESTIMATE: bool = Field(
+        default_factory=lambda: _env("BE_ROUTE_ESTIMATE", "false").strip().lower() in ("1", "true", "yes", "on"),
+        description="BE 경로 API(#37)가 없는 동안 Mock 2호선 계산으로 경로·출발 시각을 추정해 답할지. 기본 false(경로 질문은 '아직 지원하지 않음')",
     )
 
     # HTTP 서버

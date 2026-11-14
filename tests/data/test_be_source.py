@@ -349,3 +349,16 @@ def test_departure_api_failure_is_data_unavailable(post_handler):
             plan_trip("43", "25", arrive_by="15:00", now=NOW)
         out = execute_tool("plan_trip", {"start_id": "43", "end_id": "25", "arrive_by": "15:00"}, now=NOW)
     assert out.get("data_unavailable") is True and "departure_time" not in out
+
+
+def test_route_questions_are_blocked_when_route_estimate_is_off():
+    """팀 결정(2026-11-14): BE 경로 API(#37) 전에는 경로·출발 시각을 추정하지 않는다 (BE_ROUTE_ESTIMATE=false)."""
+    src = BeDataSource(http=httpx.Client(base_url="http://be.test", transport=httpx.MockTransport(fake_be)),
+                       route_estimate=False)
+    with use_data_source(src):
+        plan = plan_trip("43", "25", arrive_by="15:00")
+        assert plan.is_possible is False and "BE 경로 API" in plan.warnings[0]
+        assert plan.time_source == "AI"
+        # 역·엘리베이터·대체역은 그대로 동작한다
+        assert get_elevator_status("31").overall_status == "UNAVAILABLE"
+        assert plan_trip("31", "31").detours
