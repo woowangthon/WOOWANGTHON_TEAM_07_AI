@@ -405,7 +405,7 @@ CSV(이 레포 `data/raw/`, BE 확인 기준 11-12 작성 파일)와 API(11-13 �
 | `get_elevator_status` | `GET /api/stations/{id}/elevators` | ✅ 연동. 판정 규칙은 BE §6.2와 같음 |
 | `get_broken_elevators` | `GET /api/elevators/status` | ✅ 연동. 노선은 역 목록의 노선으로 거름 |
 | `plan_trip` 대체역 | `GET /api/stations/{id}/alternatives` | ✅ 연동 (BE 계약 §8.1은 초안) |
-| `plan_trip` 경로·소요 시간 | `GET /api/routes` (BE #37) | ✅ 연동 (AI 이슈 #6). 환승 포함 경로, 추정 소요 시간(역 간 2분·환승 5분 가정), 경로 엘리베이터 경고, `limitations`를 그대로 전함. 404는 경로 없음(`is_possible=false`). 계약 형식 스텁으로만 테스트, 실제 서버 미확인 |
+| `plan_trip` 경로·소요 시간 | `GET /api/routes` (BE #37) | ✅ 연동 (AI 이슈 #6). 환승 포함 경로, 추정 소요 시간(역 간 2분·환승 5분 가정), 경로 엘리베이터 경고, `limitations`를 그대로 전함. 404는 경로 없음(`is_possible=false`). 실제 BE(5ff20c1, dev.db 복사본) 녹화 응답으로 테스트(AI 이슈 #12). 경로 없음 404는 실제 녹화를 못 해 합성 |
 | `plan_trip` 출발 시각 | `POST /api/departure-time` | ✅ 연동 (역산 모드만, AI 이슈 #6). 이동 시간 = 경로 `total_minutes`(D17), 역 ID 함께 보냄(시간표 열차 선택 가능). 여유 5분·도보 7·진입 3·출구 3은 BE 기본값(D15)과 같지만 명시해서 보낸다. 순방향(출발 시각 기준)은 BE API가 없어 BE 경로 소요 시간으로 AI 계산. 운행 시간 밖 판정 값은 BE에 없음 |
 | (없음) | `GET /api/stations/{id}/arrivals` | 사용 안 함. 외부 출처 미연동으로 항상 `UNCONFIRMED` |
 
