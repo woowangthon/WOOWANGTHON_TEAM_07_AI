@@ -38,7 +38,7 @@ LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도�
 
 ```powershell
 pip install -r requirements.txt          # pydantic, openai, fastapi, uvicorn, httpx, pytest
-python -m pytest                         # 전체 테스트 (292건, 1건 건너뜀). 작업 전후로 반드시 실행
+python -m pytest                         # 전체 테스트 (296건, 1건 건너뜀). 작업 전후로 반드시 실행
 python scripts/run_server.py             # /api/chat 개발 서버 (http://127.0.0.1:8001, 키 없으면 폴백으로 응답)
                                          # BE 데이터로: .env에 AI_DATA_SOURCE=be (BE 서버 먼저 실행, BE/docs/demo-handoff.md)
 python scripts/llm_demo.py "사당역 엘리베이터 돼?"              # FactChat 게이트웨이 왕복 데모 (API 키 필요)
@@ -91,11 +91,12 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 
 ## 7. 아직 결정되지 않은 것 (임의로 정하지 말고 사용자에게 묻는다)
 
-- LLM 타임아웃: 명세 2.5초 vs `config.py` 3.0초
+- LLM 타임아웃: 명세 2.5초 vs `config.py` 3.0초 (모델·옵션은 2026-11-14 결정됨: `gemini-3.5-flash-lite` + 사전 확인 + 템플릿 답변이 기본값)
 - 사용할 LLM 모델과 응답 속도 옵션 기본값: 현재 기본값 FactChat `gpt-5.1`, 옵션 끔. 측정상 후보는 `gemini-3.5-flash-lite` + `LLM_PRERESOLVE=true` + `LLM_ANSWER_MODE=template` (`docs/BENCHMARK.md` §4)
 - 대체역 우선순위: 거리 vs 같은 노선 (설계 검토 §4)
 - 서비스 문구의 "실시간" 표현 (운행 상태 원천 OA-15994는 매시 갱신), 휠체어 환승·이동 여유 시간 고정값 — `docs/DATA_SPEC.md` §8
-- 출발 시각의 승강장 대기 시간: AI 5분(배차 3 + 여유 2) vs BE `/api/departure-time` `buffer_minutes` 기본 0분. FE와 챗봇이 같은 값을 쓰도록 BE 한 곳에서 정하자고 BE #14에 제안함
+- (정해짐, 2026-11-14) 승강장 대기 시간은 5분(배차 3 + 여유 2)으로 통일. BE `buffer_minutes` 기본값 0 → 5 변경을 BE #14에 요청했고, 바뀔 때까지 AI가 5분을 명시해 보낸다.
+- (정해짐, 2026-11-14) BE 경로 API(#37) 전에는 경로·출발 시각 질문을 막는다(`BE_ROUTE_ESTIMATE=false`). 역 목록은 BE 목록 API가 생길 때까지 ID 순차 조회 캐시를 쓴다.
 - (정해짐, 2026-11-14) AI는 BE API를 호출하고 대체역·출발 시각 계산은 BE가 한다 — BE가 API를 구현하고 `BE/docs/demo-handoff.md`에서 AI 입력으로 지정. 상태 TTL(120분, 임시)·역 ID(정수)·상태 표기는 BE 계약(`BE/docs/api-contract.md`)을 따른다.
 
 ## 8. 레포 밖 관련 문서

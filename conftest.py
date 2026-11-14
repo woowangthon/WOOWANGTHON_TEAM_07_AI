@@ -10,3 +10,18 @@ from pathlib import Path
 _PARENT = str(Path(__file__).resolve().parent.parent)
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _pin_llm_options(monkeypatch):
+    """테스트가 운영 기본값(LLM_PRERESOLVE, LLM_ANSWER_MODE)에 의존하지 않게 고정합니다.
+
+    오케스트레이터 테스트는 FakeLLM 스크립트 순서가 호출 방식(LLM이 답변 문장을 씀)에 맞춰져 있습니다.
+    기본값 자체는 tests/api/test_config_defaults.py가 Settings()로 따로 확인합니다.
+    """
+    from AI.src.config import settings
+    monkeypatch.setattr(settings, "LLM_PRERESOLVE", False)
+    monkeypatch.setattr(settings, "LLM_ANSWER_MODE", "llm")

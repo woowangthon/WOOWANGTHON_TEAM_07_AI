@@ -377,7 +377,7 @@ CSV(이 레포 `data/raw/`, BE 확인 기준 11-12 작성 파일)와 API(11-13 �
 | ~~역 ID 형식~~ | AI·BE·FE | **BE 계약: 정수.** AI는 BE 연동 시 BE `station_id`를 문자열로 바꿔 도구 인자에 쓴다 (§9.2). Mock은 기존 문자열 ID 유지 |
 | ~~설비 상태 표기~~ | AI·BE | **BE 계약: `가동중`/`가동 안됨`/`null` + `unknown_reason`(`NO_DATA`/`STALE`).** AI 도구 출력 변환은 §9.3 |
 | ~~엘리베이터 ID~~ | AI·BE | BE `elevator_id`(정수)를 `segment_id`에 문자열로 쓴다 |
-| 출발 시각 계산식과 대기 시간 기본값 | 팀·BE·AI | BE `/api/departure-time`의 `buffer_minutes` 기본 0분 vs AI 5분(배차 3 + 여유 2). 나머지(도보 7·진입 3·출구 3)는 같음. FE와 챗봇이 같은 값을 쓰도록 BE 한 곳에서 정하자고 BE #14에 제안 (2026-11-14) |
+| ~~출발 시각 계산식과 대기 시간 기본값~~ | 팀·BE·AI | **5분으로 통일 결정** (팀, 2026-11-14). BE `/api/departure-time`의 `buffer_minutes` 기본값 0분 → 5분 변경을 BE #14에 요청. 바뀔 때까지 AI가 5분을 명시해 보낸다. 나머지(도보 7·진입 3·출구 3)는 같음 |
 | `/api/elevators/status`의 노선 필터 | BE | 응답에 노선이 없어 "2호선 고장 역"에 역마다 추가 호출이 필요. BE #14에 요청 |
 | 경로 API(BE #37)와 `travel_minutes` 출처 | BE | #37 전까지 검증된 이동 시간이 없음. #37 응답을 `/api/departure-time`에 넣는 흐름인지 BE #14에 확인 요청 |
 | OA-21212가 종료된 서비스인지, 계속 받을 수 있는지 | BE | 공식 페이지에 종료 안내 문구가 보임 |

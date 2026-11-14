@@ -48,7 +48,10 @@ class BeDataSource:
     """BE API 데이터 소스. http 인자로 httpx.Client(또는 같은 get 인터페이스)를 넣어 테스트할 수 있습니다."""
 
     def __init__(self, base_url: str = "http://127.0.0.1:8000", timeout: float = 2.0,
-                 http: Optional[httpx.Client] = None):
+                 http: Optional[httpx.Client] = None, route_estimate: bool = True):
+        # route_estimate=False: BE 경로 API(#37) 전에는 경로·출발 시각을 추정하지 않고 "지원하지 않음"으로 답함.
+        # 운영 기본값은 설정 BE_ROUTE_ESTIMATE(false). 직접 만들 때는 True(테스트 호환).
+        self.route_estimate = route_estimate
         self._http = http or httpx.Client(base_url=base_url, timeout=timeout)
         self._mock = MockDataSource()  # 별칭·키워드·경로·시간 상수
         self._catalog: Optional[Dict[str, dict]] = None
@@ -204,6 +207,8 @@ class BeDataSource:
 
     def find_route(self, start_id: str, end_id: str) -> Optional[Tuple[List[str], int, str]]:
         """BE 경로 API(#37)가 없어 Mock 2호선 순환선 계산을 역 이름으로 연결해 씁니다 (추정)."""
+        if not self.route_estimate:
+            return None
         s, e = self._mock_id(start_id), self._mock_id(end_id)
         if not s or not e:
             return None

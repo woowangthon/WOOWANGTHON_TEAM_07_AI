@@ -137,7 +137,8 @@ def plan_trip(
         path, stops, line_id = [start_id, end_id], 0, ""
         warnings.append(
             f"{station_name(start_id)}역→{station_name(end_id)}역 경로는 아직 계산을 지원하지 않습니다 "
-            "(현재 2호선 순환선 구간만 지원)."
+            + ("(경로 데이터(BE 경로 API) 연동 전이라 경로·출발 시각은 안내하지 않습니다)."
+               if getattr(src, "route_estimate", True) is False else "(현재 2호선 순환선 구간만 지원).")
         )
     ride_min = stops * timing["minutes_per_stop"]
     route = RouteInfo(

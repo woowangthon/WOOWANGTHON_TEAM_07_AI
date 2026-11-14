@@ -107,7 +107,8 @@ def _create(name: str) -> DataSource:
     if name == "be":
         from ..config import settings
         from .be_source import BeDataSource
-        return BeDataSource(settings.BE_API_BASE_URL, settings.BE_API_TIMEOUT_SECONDS)
+        return BeDataSource(settings.BE_API_BASE_URL, settings.BE_API_TIMEOUT_SECONDS,
+                            route_estimate=settings.BE_ROUTE_ESTIMATE)
     raise ValueError(f"알 수 없는 데이터 소스입니다: {name!r} (현재 지원: mock, be)")
 
 

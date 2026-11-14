@@ -3,7 +3,7 @@
 > 이 문서는 **현재 코드가 실제로 어떻게 동작하는지**를 정리한다. 목표 설계는 [`AI_DEVELOPMENT_SPEC.md`](./AI_DEVELOPMENT_SPEC.md)에 있다.
 > 코드 동작을 바꾸면 이 문서의 해당 절도 같이 고친다.
 >
-> 최종 갱신: 2026-11-14 · 단위 테스트 292건 통과 (1건 skip)
+> 최종 갱신: 2026-11-14 · 단위 테스트 296건 통과 (1건 skip)
 
 ---
 
@@ -20,7 +20,7 @@
 | LLM 게이트웨이 왕복 데모 | §9 Phase 2 | ✅ 실험용 | `scripts/llm_demo.py` |
 | `/api/chat` 요청/응답 모델 | §4 | ✅ | `src/models.py` |
 | 데이터 소스 인터페이스 (Mock/BE 교체) | — | ✅ Mock, BE API(`AI_DATA_SOURCE=be`). BE 데모 서버로 실제 연동 확인 (§4.8) | `src/data/source.py`, `mock_source.py`, `be_source.py` |
-| FastAPI `/api/chat` 엔드포인트 (오케스트레이터) | §4 | ✅ FactChat `gpt-5.1`로 50문항 왕복 확인. 기본 설정은 **응답 시간이 목표 초과**, `gemini-3.5-flash-lite` + 응답 속도 옵션(§4.6)은 목표 안 ([BENCHMARK](./BENCHMARK.md) §4) | `src/api/app.py`, `src/llm/orchestrator.py`, `client.py` |
+| FastAPI `/api/chat` 엔드포인트 (오케스트레이터) | §4 | ✅ FactChat 50문항 왕복 확인. 기본 설정은 `gemini-3.5-flash-lite` + 응답 속도 옵션 둘 다 켬(P95 약 1.5~1.8초, 목표 안. 팀 결정 2026-11-14, §4.6) ([BENCHMARK](./BENCHMARK.md) §4) | `src/api/app.py`, `src/llm/orchestrator.py`, `client.py` |
 | 액션·카드 조립 (도구 결과 기반) | §4 | ✅ | `src/llm/response_builder.py` |
 | 세션 슬롯 메모리 (TTL 30분) | §5.2 | ✅ 인메모리 | `src/llm/session.py` |
 | LLM 장애 → 폴백 전환 | §6.2 | ✅ | `src/llm/orchestrator.py` |
@@ -258,7 +258,7 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 
 ### 4.6 응답 속도 옵션 (이슈 #17)
 
-`gpt-5.1`은 호출 1회에 약 1.2~3.3초가 걸리고 한 질문에 2~3회 호출해 P50이 약 5.5초다. 호출 횟수를 줄이는 두 옵션을 두었다. **기본값은 둘 다 꺼짐(기존 동작)** 이며, 켤지는 측정 결과([BENCHMARK](./BENCHMARK.md) §4)를 보고 팀이 정한다.
+`gpt-5.1`은 호출 1회에 약 1.2~3.3초가 걸리고 한 질문에 2~3회 호출해 P50이 약 5.5초다. 호출 횟수를 줄이는 두 옵션을 두었다. **기본값은 둘 다 켬 + 모델 `gemini-3.5-flash-lite`** (팀 결정 2026-11-14, 측정 [BENCHMARK](./BENCHMARK.md) §4). 예전 동작으로 되돌리려면 `.env`에 `FACTCHAT_MODEL=gpt-5.1`, `LLM_PRERESOLVE=false`, `LLM_ANSWER_MODE=llm`. `.env`에 값이 있으면 기본값보다 우선한다.
 
 | 설정 | 값 | 동작 | 줄어드는 호출 |
 |---|---|---|---|
@@ -336,7 +336,7 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 | 오전/오후 모호성 | 현재 시각 이후 가장 가까운 시각 (설계 검토 §2.1) | 1~6시는 오후 고정, 지난 시각은 다음 날 |
 | 첫차/막차 | 범위 밖이면 예외 응답 (설계 검토 §2.4) | 미반영 |
 | 데이터 신선도 | 실제 갱신 시각 | BE 연동 시 설비 `fetched_at`과 BE의 `data_fresh` 판정(TTL 120분, 임시). Mock은 현재 − 5분 고정값 |
-| 출발 시각 대기 시간 | 배차 간격 + 안전 여유 | AI 5분(2호선 배차 3 + 여유 2). BE `/api/departure-time`은 `buffer_minutes` 기본 0분 — 통일 여부 팀 결정 대기 (BE #14 코멘트) |
+| 출발 시각 대기 시간 | 배차 간격 + 안전 여유 | **5분으로 통일하기로 결정**(팀 결정 2026-11-14, 2호선 배차 3 + 여유 2). BE 기본값은 아직 0분이라 BE가 바꿀 때까지 AI가 `buffer_minutes=5`를 명시해 보낸다 (BE #14 요청) |
 
 ---
 
@@ -345,14 +345,25 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 - 경로는 2호선 순환선만. 순환선 밖 역은 `is_possible=False`로 정직하게 거절한다.
 - 대체역 거리 정보가 없는 곳(방배, 신대방, 인접 역 자동 선택, BE 대체역 전부)은 거리·도보 시간을 안내하지 않는다.
 - BE 데이터 소스의 역 목록은 프로세스 동안 캐시한다. BE 역 시드가 바뀌면 AI 서버를 다시 시작해야 한다.
+- **BE 경로 API(#37) 전에는 경로·출발 시각 질문을 막는다** (`BE_ROUTE_ESTIMATE=false`, 팀 결정 2026-11-14). `AI_DATA_SOURCE=be`면 `find_route`가 `None`이라 "경로 데이터(BE 경로 API) 연동 전이라 경로·출발 시각은 안내하지 않습니다"로 답하고(`trip_unsupported`), 역·엘리베이터·대체역은 그대로 답한다. `BE_ROUTE_ESTIMATE=true`면 Mock 2호선 계산을 추정으로 안내한다(§4.8). Mock 데이터 소스에는 영향 없다.
 - BE 데모 DB는 엘리베이터 상태가 대부분 `STALE`이라, 시연 답변의 대부분은 "확인할 수 없음"이다 (BE `docs/demo-handoff.md`).
 - 폴백의 역 추출은 띄어쓰기가 없는 문장("신도림에서강남역")에서 앞 역을 놓칠 수 있다. LLM 경로는 `resolve_station`이 역 이름만 받으므로 영향 없음.
 - 세션은 서버 프로세스 메모리에만 있다. 서버를 여러 대 띄우거나 재시작하면 이어지지 않는다.
-- 기본 설정(`gpt-5.1`, 응답 속도 옵션 끔)은 한 질문에 P50 약 5.5초가 걸려, 호출당 3초 타임아웃에서 32~44%가 폴백으로 넘어간다 ([BENCHMARK](./BENCHMARK.md) §4). 목표 안에 든 조합(§4.6)으로 바꿀지, 모델·타임아웃은 팀 결정 사항이다.
+- 예전 기본 설정(`gpt-5.1`, 옵션 끔)은 한 질문에 P50 약 5.5초가 걸려, 호출당 3초 타임아웃에서 32~44%가 폴백으로 넘어갔다 ([BENCHMARK](./BENCHMARK.md) §4). 현재 기본값은 목표 안에 든 조합이다. 타임아웃 값(명세 2.5초 vs 3.0초)은 아직 결정 전이다.
 
 ---
 
 ## 7. 변경 이력
+
+### 2026-11-14 — 팀 결정 반영 (모델·옵션 기본값, 경로 질문 막기, 대기 시간 5분)
+
+| 추가·변경 | 내용 |
+|---|---|
+| `src/config.py`, `.env.example` | 기본값 변경: `FACTCHAT_MODEL=gemini-3.5-flash-lite`, `LLM_PRERESOLVE=true`, `LLM_ANSWER_MODE=template` (§4.6). 새 설정 `BE_ROUTE_ESTIMATE`(기본 false) |
+| `src/data/be_source.py`, `source.py`, `src/tools/trip.py` | `BE_ROUTE_ESTIMATE=false`면 BE 경로 API(#37) 전에는 경로·출발 시각 질문에 "안내하지 않습니다"로 답함. 역·엘리베이터·대체역은 그대로 |
+| `conftest.py` | 테스트가 운영 기본값에 의존하지 않게 LLM 옵션을 고정 (autouse) |
+| 테스트 | 기본 설정 3건(`tests/api/test_config_defaults.py`), 경로 막기 1건 추가 (총 296건, 1건 skip) |
+| 문서 | 대기 시간 5분 통일 결정 기록 (BE #14에 기본값 변경 요청), 역 목록 방식 유지 결정 |
 
 ### 2026-11-14 — BE 출발 시각 연동 (이슈 #6 일부), 통합 시나리오 (이슈 #12), 데이터 기준 시각 (이슈 #10)
 
