@@ -406,7 +406,7 @@ CSV(이 레포 `data/raw/`, BE 확인 기준 11-12 작성 파일)와 API(11-13 �
 | `get_broken_elevators` | `GET /api/elevators/status` | ✅ 연동. 노선은 역 목록의 노선으로 거름 |
 | `plan_trip` 대체역 | `GET /api/stations/{id}/alternatives` | ✅ 연동 (BE 계약 §8.1은 초안) |
 | `plan_trip` 경로·소요 시간 | `GET /api/routes` (BE #37) | ❌ BE 미구현. AI Mock 2호선 계산을 추정으로 안내 |
-| `plan_trip` 출발 시각 | `POST /api/departure-time` | ⏸ 연동 보류. 대기 시간 기본값(BE 0분, AI 5분) 통일과 이동 시간 출처(#37)가 정해진 뒤 |
+| `plan_trip` 출발 시각 | `POST /api/departure-time` | ✅ 연동 (역산 모드만, AI 이슈 #6). 대기 시간 기본값 통일 전이라 AI가 여유 5분(배차 3 + 여유 2)·도보·진입·출구 값을 모두 명시해서 보낸다(BE 기본 `buffer_minutes` 0분을 쓰지 않음). 이동 시간은 #37 전까지 AI Mock 2호선 계산값. 순방향(출발 시각 기준)은 BE API가 없어 AI 계산 |
 | (없음) | `GET /api/stations/{id}/arrivals` | 사용 안 함. 외부 출처 미연동으로 항상 `UNCONFIRMED` |
 
 BE 데이터에서 확인한 사실 (데모 DB, 2026-11-14):

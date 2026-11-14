@@ -3,7 +3,7 @@
 > 이 문서는 **현재 코드가 실제로 어떻게 동작하는지**를 정리한다. 목표 설계는 [`AI_DEVELOPMENT_SPEC.md`](./AI_DEVELOPMENT_SPEC.md)에 있다.
 > 코드 동작을 바꾸면 이 문서의 해당 절도 같이 고친다.
 >
-> 최종 갱신: 2026-11-14 · 단위 테스트 217건 통과
+> 최종 갱신: 2026-11-14 · 단위 테스트 292건 통과 (1건 skip)
 
 ---
 
@@ -100,6 +100,13 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 
 `board_time` = 출발 + (도보 + 진입 + 대기). `minutes_from_now` = 출발 − 현재.
 
+**BE 역산 (`AI_DATA_SOURCE=be`, 이슈 #6)**: 역산 모드이고 `is_possible=True`, 출발역≠도착역이면 출발 시각을 BE `POST /api/departure-time`(계약 §8.2)으로 계산한다 (`time_source="BE"`). 그 밖(순방향·지금 출발, 대체역만 묻기, 경로 미지원)과 Mock 데이터 소스는 위 계산을 그대로 쓴다 (`time_source="AI"`).
+
+- 보내는 값은 모두 AI 값이다: `arrival_at` = 위 규칙으로 정한 도착 날짜·시각 + `+09:00`, `travel_minutes` = 정거장 수 × 2(Mock 2호선 계산), `buffer_minutes` = 최악 대기 5분(배차 3 + 여유 2), `walk_to_station_minutes` = `home_walk_min`(기본 7), `station_entry_minutes` 3, `exit_walk_minutes` 3. BE 기본값(특히 `buffer_minutes` 0분)에 맡기지 않으므로 결과 시각은 직접 계산과 같다 (테스트로 확인).
+- `departure_time`·`board_time`·`arrival_time`은 BE의 `recommended_departure_at`·`estimated_boarding_at`·`arrival_at`을 KST `HH:MM`으로 옮긴 값이다. `minutes_from_now`·`is_late`는 AI 기준 시각(`now`)으로 계산한다. BE `already_past`는 BE 서버 시계 기준이라 쓰지 않는다.
+- `limitations`: AI의 추정 계산 문구 대신 BE 문구(시간표 미사용, 이동 시간 외부 입력, 도보·진입·출구 추정)를 앞에 넣고 AI 항목(역 상태 미확인 등)을 뒤에 붙인다(중복 제거). BE의 엘리베이터 미확인 문구(BE가 역 상태를 받지 않아 붙음)와 "이미 지났음" 문구(BE 서버 시계 기준)는 뺀다. `elevator_warning`은 쓰지 않으며 경고를 만들지 않는다. 역 상태는 아래 우회 단계에서 직접 확인한다.
+- BE 연결 실패·타임아웃·200 외 응답(422 포함)·해석 실패 → `DataUnavailableError`. 직접 계산으로 대신 답하지 않는다.
+
 **엘리베이터 우회**
 
 - 출발역과 도착역(같은 역이면 한 번)의 상태가 `PARTIAL`/`UNAVAILABLE`이면 `find_alternatives`로 대체역을 찾아 `detours`(`target_type` = `start`/`end`)와 `warnings`에 넣는다. 출발=도착이면 후보를 모두, 경로면 첫 후보만 넣는다.
@@ -107,7 +114,7 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
   - Mock: (1) `ALTERNATIVES`에 등록된 안내. 대체역이 고장으로 확인되면 제외하고, 상태가 미확인이면 `limitations`에 "대체역 ○○역의 엘리베이터 상태는 확인되지 않음". (2) 없으면 순환선 양옆 역 중 가동이 **확인된** 역(`AVAILABLE`/`PARTIAL`).
   - 거리·도보 시간은 확인된 값만 넣는다(없으면 `None`). 예전의 기본값 800m / 10분은 없앴다.
 - 상태가 `UNKNOWN`인 역에는 대체역을 붙이지 않고 `limitations`에 "○○역 엘리베이터 상태를 확인하지 못함"을 넣는다. 일부만 확인된 역은 "○○역: 일부 설비 상태가 …".
-- 경로를 계산했으면 `estimated=true`, `limitations` 첫 줄에 "열차 시간표와 실제 경로 탐색을 쓰지 않은 추정 계산이며 탑승 가능한 열차는 확인되지 않음".
+- 경로를 계산했으면 `estimated=true`, `limitations` 첫 줄에 "열차 시간표와 실제 경로 탐색을 쓰지 않은 추정 계산이며 탑승 가능한 열차는 확인되지 않음" (BE 역산을 쓴 경우는 위의 BE 문구).
 - 환승역은 검사하지 않는다. 대체역을 찾아도 경로·시간은 다시 계산하지 않는다.
 - **고장 역의 대체역만 알고 싶으면 `start_id == end_id`로 호출한다** (폴백 엔진과 LLM 도구 설명 모두 이 방식).
 
@@ -210,7 +217,7 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 | 6 | `resolve_station` NOT_FOUND | `need_station` | — |
 | 7 | 도구 호출 없음 | `help` | — |
 
-`metadata.data_updated_at`은 고른 결과에 `updated_at`이 있으면 그 값, 없으면 응답 생성 시각이다.
+`metadata.data_updated_at`은 고른 결과의 `updated_at`(데이터 수집 시각)이다. `elevator_status`(`get_elevator_status`)와 `outages_list`·`outages_empty`(`get_broken_elevators`)만 값이 있고, 수집 시각이 없는 결과(엘리베이터 데이터가 없는 역, `trip_plan`·`trip_unsupported`, 대체역만 답한 응답, `out_of_coverage`, `need_station`, `help`, `data_unavailable`)는 `None`이다. 응답 생성 시각으로 채우지 않는다. 폴백 엔진도 같은 규칙이다 (`tests/llm/test_metadata_updated_at.py`).
 
 ### 4.3 폴백 전환
 
@@ -268,9 +275,9 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 
 ### 4.8 데이터 소스 (`data/source.py`)
 
-- `DataSource` 인터페이스: 역 목록·역 하나·별칭·미지원 키워드, 역별 엘리베이터·전체 엘리베이터·기준 시각, 계산된 대체역 후보(`alternative_candidates`)·등록된 대체역·인접 역·경로, 시간 상수.
+- `DataSource` 인터페이스: 역 목록·역 하나·별칭·미지원 키워드, 역별 엘리베이터·전체 엘리베이터·기준 시각, 계산된 대체역 후보(`alternative_candidates`)·등록된 대체역·인접 역·경로, 시간 상수, 출발 시각 역산(`departure_estimate`, Mock은 `None`).
 - 구현 선택: 환경 변수 `AI_DATA_SOURCE` = `mock`(기본) / `be`. 테스트는 `use_data_source(가짜)`로 바꿔 끼운다.
-- 상태 판정, 출발 시각 역산, 안내 문장은 도구에 남아 있다.
+- 상태 판정, 안내 문장은 도구에 남아 있다. 출발 시각 역산은 BE면 BE가, Mock이면 도구가 한다 (§2.4). 역산에 넣는 분 값은 어느 쪽이든 도구가 정한다.
 
 **BE 데이터 소스 (`be_source.BeDataSource`, 이슈 #4·#5)** — 설정 `BE_API_BASE_URL`(기본 `http://127.0.0.1:8000`), `BE_API_TIMEOUT_SECONDS`(기본 2.0)
 
@@ -281,18 +288,36 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 | 역별 엘리베이터 | `GET /api/stations/{id}/elevators` | `가동중`→`AVAILABLE`, `가동 안됨`→`UNAVAILABLE`, `null`→`UNKNOWN`(+`unknown_reason`). `type=None`(BE에 분류 없음), 위치는 `location_description` 원문, 층은 `operation_section`. 합성 설비(`[DEMO/SYNTHETIC]`)는 위치를 "시연용 합성 설비(실제 상태 아님)"로 표시 |
 | 전체 엘리베이터 | `GET /api/elevators/status` | 역별로 묶음. 노선 필터는 캐시한 역 목록의 노선으로 (추가 호출 없음) |
 | 대체역 | `GET /api/stations/{id}/alternatives` | BE 추천 순 그대로. `distance`→`stops_away`, `same_line`, 후보 역 상태. 도보 거리·시간 없음 |
-| 경로·시간 | (BE #37 없음) | Mock 2호선 순환선 계산을 역 이름으로 연결. 추정으로 안내 |
+| 경로·열차 이동 시간 | (BE #37 없음) | Mock 2호선 순환선 계산을 역 이름으로 연결. 추정으로 안내 |
+| 출발 시각 (역산 모드) | `POST /api/departure-time` (이슈 #6) | 분 값(이동 = Mock 계산, 여유 = AI 최악 대기 5분, 도보·진입·출구)을 모두 명시해서 보냄. 응답 시각을 KST `HH:MM`으로. `already_past`·`elevator_warning`은 쓰지 않음 (§2.4) |
 
-- 실패 처리: 연결 실패·타임아웃·200/404 외 응답·JSON 해석 실패 → `DataUnavailableError`. 404는 "없음"(`None`).
+- 실패 처리: 연결 실패·타임아웃·200/404 외 응답·JSON 해석 실패 → `DataUnavailableError`. 404는 "없음"(`None`). `POST /api/departure-time`은 200 외 응답(404·422 포함)과 시각 필드 누락도 `DataUnavailableError`(422는 AI가 계약과 다른 값을 보낸 것이라 메시지에 밝힘).
 - 실행 확인 (2026-11-14): BE `main` 342a9d0 데모 DB 서버에 붙여 8개 질문을 폴백과 `gemini-3.5-flash-lite`(두 옵션 켬)로 확인했다. LLM은 8건 모두 폴백 없이 응답했고, 첫 요청 3.5초(역 목록 읽기 포함), 이후 1.0~1.2초였다. `scripts/run_server.py`는 `AI_DATA_SOURCE=be`면 시작할 때 역 목록을 미리 읽는다.
-- 테스트는 데모 서버의 실제 응답을 자른 픽스처(`tests/data/fixtures/be_demo_responses.json`)와 `httpx.MockTransport`로 한다.
+- 테스트는 데모 서버의 실제 응답을 자른 픽스처(`tests/data/fixtures/be_demo_responses.json`)와 `httpx.MockTransport`로 한다. 출발 시각은 실제 응답 1건(`be_departure_response.json`, 도착 2026-12-01 15:00·이동 20분·나머지 BE 기본값)을 픽스처로 두고, 가짜 BE가 계약 §8.2 공식으로 응답을 만들되 이 녹화 응답과 같은 값을 내는지 먼저 확인한다. 출발 시각 연동은 실제 BE 서버에 붙여 `plan_trip`으로 돌려 보지 않았다 (가짜 BE로만 확인).
 
 ### 4.9 데이터 미확인·장애 안내 (이슈 #10)
 
 - 도구 결과의 `limitations`는 템플릿·폴백 문장 끝에 "※ …" 줄로 붙이고, LLM 문장에도 없으면 덧붙인다 (§4.1).
 - 프롬프트 수칙 11: `UNKNOWN`이거나 `data_fresh=false`면 "정상", "이용 가능"이라고 단정하지 않고, `limitations`는 빼거나 바꾸지 않는다.
 - 데이터 소스(BE) 장애: 도구 실행기가 `data_unavailable` 표시를 붙이고, 오케스트레이터는 LLM 문장이 있어도 버리고 "지금은 역·엘리베이터 정보를 확인할 수 없습니다. 이전 정보나 추정값으로 안내하지 않으니 …"로 답한다 (`card_type="data_unavailable"`, `fallback_reason="data_unavailable"`). 역 사전 확인이나 폴백 엔진에서 나도 같다.
-- 남은 것: `metadata.data_updated_at`은 고른 결과의 `updated_at`(BE `fetched_at`)이지만, 없으면 아직 응답 생성 시각이다. "실시간" 표현은 팀 결정 대기.
+- `metadata.data_updated_at`은 고른 결과의 `updated_at`(BE는 설비별 `fetched_at` 중 가장 최근 값, Mock은 Mock 기준 시각)이고, 없으면 `None`이다. 응답 생성 시각으로 채우지 않는다 (§4.2). LLM·폴백 경로 모두 같다.
+- 남은 것: "실시간" 표현은 팀 결정 대기.
+
+### 4.10 통합 시나리오 테스트 (이슈 #12)
+
+`tests/llm/test_scenarios_be.py` — 실제 `ChatOrchestrator`를 `BeDataSource`에 붙이고, BE는 `httpx.MockTransport`로 흉내 낸다. BE 응답은 데모 DB 서버 실제 응답 픽스처(`tests/data/fixtures/be_demo_responses.json`)와 출발 시각 API 실제 응답(`tests/llm/fixtures/scenario_be_departure_time.json`)이다. 가짜 BE는 `POST /api/departure-time`도 BE 계약 공식(§8.2)으로 계산하며, 그 결과가 기록된 실제 응답과 같은지도 검사한다(지금 `plan_trip`은 아직 이 API를 부르지 않음). 시나리오는 BE 이슈 #42와 같다.
+
+| 시나리오 | 질문 예 | 폴백 경로 | LLM 경로 (`FakeLLM`, BE 역 ID로 도구 호출) |
+|---|---|---|---|
+| 1 엘리베이터 상태 | "강남역 엘리베이터 돼?", "사당역 엘리베이터 돼?"(전부 STALE) | ○ | ○ — LLM이 뺀 "※" 한계 안내를 코드가 덧붙임, 고장 역 대체역 보충 |
+| 2 대체역 | (강남 다음) "거기 말고 다른 역은?" | ○ — 세션 최근 역, `showAlternative` payload가 BE ID | ○ — 세션 역이 프롬프트에 BE ID로, BE 추천 순(역삼·교대·남부터미널). 지어낸 역(논현)은 검증이 템플릿으로 바꿈 |
+| 3 출발 시각 | "신도림에서 잠실까지 3시까지 가려면?" (12:00) | ○ — 14:06 출발, 14:21 탑승 | ○ — LLM 문장, 역 사전 확인 + 템플릿, 지어낸 시각 교체 |
+| 4 고장·점검 목록 | "지금 고장난 역 알려줘", "2호선에서 엘리베이터 고장 난 역 목록 보여줘" | ○ — 강남·선릉, 미확인 설비 안내 | ○ — 한계 안내 덧붙임 |
+| 5 경로 조회 | "신도림에서 잠실까지 가는 길 알려줘" | — | — (`skip`: BE 경로 API #37 대기. 기대 동작만 적어 둠) |
+| BE 장애 | 연결 실패, 엘리베이터 조회만 5xx | ○ | ○ (역 사전 확인 포함) — `data_unavailable`, `fallback_reason="data_unavailable"` |
+| 지원 범위 밖 | "판교역 엘리베이터 돼?" | ○ | ○ — `out_of_coverage` |
+
+- 출발 시각은 계산 방식이 BE API로 바뀌어도 통과하도록 시각·카드·액션과 한계 안내가 있는지만 확인하고 문구는 고정하지 않는다.
 
 ---
 
@@ -303,7 +328,7 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 | LLM 타임아웃 | 2.5초 (명세 §1, §6.2) | `config.py` 기본값 3.0초, 호출 1회 기준 — **팀 확정 필요** |
 | 오케스트레이터 비동기 처리 | `async/await` (명세 §9 Phase 2) | 동기 함수 + FastAPI 스레드 풀 |
 | 후처리 검증 대상 | 역명·시각 정규식 (명세 §6.1) | 같음. 추가로 `N시 반`, `N시` 형식과 오전/오후 12시간 차이 허용 (§4.5) |
-| `ChatResponseMetadata` | `engine`, `latency_ms`, `fallback_used`, `data_updated_at` | `fallback_reason`, `guard_triggered` 추가 (명세 §4.2 반영) |
+| `ChatResponseMetadata` | `engine`, `latency_ms`, `fallback_used`, `data_updated_at` | `fallback_reason`, `guard_triggered` 추가, `data_updated_at`은 모르면 `null` (명세 §4.2 반영) |
 | 커버리지 판정 | 역 단위 목록 (설계 검토 §2.2) | `STATIONS` 등록 여부 + 키워드 블랙리스트 |
 | 엘리베이터 이용 가능 판정 | 이동 방향에 필요한 구간 기준 (설계 검토 §2.3) | 확인된 설비 중 불가 개수 기준 (BE 계약 §6.2와 같음). BE에 설비 위치 분류·방향이 없어 구간 판정 불가 |
 | 고장 우회 | 출발·환승·도착, 그래프에서 고장 노드 제외 | 출발·도착만. BE 연동 시 BE 대체역 API(인접 간선 BFS), Mock은 등록된 안내 또는 인접 역 |
@@ -328,6 +353,20 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 ---
 
 ## 7. 변경 이력
+
+### 2026-11-14 — BE 출발 시각 연동 (이슈 #6 일부), 통합 시나리오 (이슈 #12), 데이터 기준 시각 (이슈 #10)
+
+세 작업을 병렬로 만들어(브랜치 `feat/departure-api`, `test/integration-scenarios`, `fix/data-updated-at`) 한 브랜치로 합쳤다.
+
+| 추가·변경 | 내용 |
+|---|---|
+| `src/data/source.py`, `mock_source.py`, `be_source.py` | `departure_estimate()`: Mock은 None(직접 계산), BE는 `POST /api/departure-time`. 분 값은 모두 AI 값을 명시해서 보냄(대기 5분 등) |
+| `src/tools/trip.py`, `src/models.py` (`PlanTripOutput.time_source`) | 역산 모드·경로 있음·출발≠도착이면 BE 결과 시각 사용 (`time_source="BE"`). 지각 판정은 AI 기준 시각. BE limitations 중 엘리베이터 미확인·이미 지났음 문구는 전하지 않음 (§2.4) |
+| `src/models.py` (`ChatResponseMetadata.data_updated_at`), `src/llm/orchestrator.py`, `response_builder.py`, `src/fallback/engine.py` | `data_updated_at`은 데이터 수집 시각, 모르면 `null` (예전에는 응답 생성 시각). 폴백 경로도 도구의 `updated_at`을 씀 (§4.2) |
+| `src/fallback/engine.py` | 대체역 후보가 여럿이면(BE) "다른 후보"도 안내 — LLM 경로 템플릿과 맞춤 (통합 시나리오에서 발견) |
+| `tests/llm/test_scenarios_be.py` | 실제 BE 응답 픽스처 기반 `/api/chat` 시나리오 4종 × 폴백·LLM, BE 장애·범위 밖. 경로 조회는 skip (§4.10) |
+| 실행 확인 | BE 데모 서버로 8개 질문 재확인: 출발 시각이 BE로 계산되고(14:06, 이전과 같음) `data_updated_at`에 BE `fetched_at`이 들어감. LLM 8건 폴백 없음 |
+| 테스트 | 출발 시각 22건, 기준 시각 27건, 시나리오 25건(+skip 1), 병합 확인 1건 추가 (총 292건 통과, 1건 skip) |
 
 ### 2026-11-14 — BE 계약 리뷰 (이슈 #1), 상태 규칙 (이슈 #2), BE API 연동 (이슈 #4, #5), 미확인 안내 (이슈 #10 일부)
 

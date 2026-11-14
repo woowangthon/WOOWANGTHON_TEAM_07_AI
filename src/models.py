@@ -4,7 +4,6 @@
 *Input 모델은 LLM에 노출되는 도구 파라미터 스키마의 원본입니다 (src/tools/registry.py가 변환).
 """
 
-from datetime import datetime
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
 
@@ -174,6 +173,9 @@ class PlanTripOutput(BaseModel):
     limitations: List[str] = Field(
         default_factory=list, description="사용자에게 그대로 전할 한계 안내 문장 (추정 계산, 미확인 상태 등)"
     )
+    time_source: Literal["AI", "BE"] = Field(
+        "AI", description="출발·탑승·도착 시각을 계산한 곳. BE면 BE /api/departure-time 역산 결과 (분 값은 AI가 보냄)"
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -210,7 +212,10 @@ class ChatResponseMetadata(BaseModel):
     guard_triggered: bool = Field(
         False, description="LLM 문장이 후처리 검증에 걸려 도구 결과 기반 템플릿 문장으로 바뀌었는지"
     )
-    data_updated_at: str = Field(default_factory=lambda: datetime.now().isoformat())
+    data_updated_at: Optional[str] = Field(
+        None, description="응답 근거 데이터의 수집 시각 (도구 결과의 updated_at, ISO-8601 KST). "
+                          "근거 데이터에 수집 시각이 없으면 None. 응답 생성 시각으로 채우지 않음"
+    )
 
 
 class ChatResponse(BaseModel):
