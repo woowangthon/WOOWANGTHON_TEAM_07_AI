@@ -104,7 +104,7 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 
 - 보내는 값은 모두 AI 값이다: `arrival_at` = 위 규칙으로 정한 도착 날짜·시각 + `+09:00`, `travel_minutes` = 정거장 수 × 2(Mock 2호선 계산), `buffer_minutes` = 최악 대기 5분(배차 3 + 여유 2), `walk_to_station_minutes` = `home_walk_min`(기본 7), `station_entry_minutes` 3, `exit_walk_minutes` 3. BE 기본값(특히 `buffer_minutes` 0분)에 맡기지 않으므로 결과 시각은 직접 계산과 같다 (테스트로 확인).
 - `departure_time`·`board_time`·`arrival_time`은 BE의 `recommended_departure_at`·`estimated_boarding_at`·`arrival_at`을 KST `HH:MM`으로 옮긴 값이다. `minutes_from_now`·`is_late`는 AI 기준 시각(`now`)으로 계산한다. BE `already_past`는 BE 서버 시계 기준이라 쓰지 않는다.
-- `limitations`: AI의 추정 계산 문구 대신 BE 문구(시간표 미사용, 이동 시간 외부 입력, 도보·진입·출구 추정)를 앞에 넣고 AI 항목(역 상태 미확인 등)을 뒤에 붙인다(중복 제거). BE의 엘리베이터 미확인 문구(BE가 역 상태를 받지 않아 붙음)와 "이미 지났음" 문구(BE 서버 시계 기준)는 뺀다. `elevator_warning`은 쓰지 않으며 경고를 만들지 않는다. 역 상태는 아래 우회 단계에서 직접 확인한다.
+- `limitations`: AI의 추정 계산 문구 대신 BE 문구를 앞에 넣는다. BE 문구는 응답의 `timetable_used`를 따른다 — `false`면 시간표 미사용·이동 시간 외부 입력·도보·진입·출구 추정, `true`(요청에 역 id를 준 경우)면 시간표로 고른 열차의 계획 시각이라 지연이 반영되지 않고 방향은 추정이라는 안내(BE 계약 §8.2, R14). AI는 BE 문구를 바꾸지 않고 그대로 전한다. 현재 AI는 `from/to` 역 id를 보내지 않아 `timetable_used`는 `false`다. 그 뒤에 AI 항목을 붙이고 AI 항목(역 상태 미확인 등)을 뒤에 붙인다(중복 제거). BE의 엘리베이터 미확인 문구(BE가 역 상태를 받지 않아 붙음)와 "이미 지났음" 문구(BE 서버 시계 기준)는 뺀다. `elevator_warning`은 쓰지 않으며 경고를 만들지 않는다. 역 상태는 아래 우회 단계에서 직접 확인한다.
 - BE 연결 실패·타임아웃·200 외 응답(422 포함)·해석 실패 → `DataUnavailableError`. 직접 계산으로 대신 답하지 않는다.
 
 **엘리베이터 우회**
@@ -114,7 +114,7 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
   - Mock: (1) `ALTERNATIVES`에 등록된 안내. 대체역이 고장으로 확인되면 제외하고, 상태가 미확인이면 `limitations`에 "대체역 ○○역의 엘리베이터 상태는 확인되지 않음". (2) 없으면 순환선 양옆 역 중 가동이 **확인된** 역(`AVAILABLE`/`PARTIAL`).
   - 거리·도보 시간은 확인된 값만 넣는다(없으면 `None`). 예전의 기본값 800m / 10분은 없앴다.
 - 상태가 `UNKNOWN`인 역에는 대체역을 붙이지 않고 `limitations`에 "○○역 엘리베이터 상태를 확인하지 못함"을 넣는다. 일부만 확인된 역은 "○○역: 일부 설비 상태가 …".
-- 경로를 계산했으면 `estimated=true`, `limitations` 첫 줄에 "열차 시간표와 실제 경로 탐색을 쓰지 않은 추정 계산이며 탑승 가능한 열차는 확인되지 않음" (BE 역산을 쓴 경우는 위의 BE 문구).
+- 경로를 계산했으면 `estimated=true`, `limitations` 첫 줄에 "열차 시간표와 실제 경로 탐색을 쓰지 않은 추정 계산이며 탑승 가능한 열차는 확인되지 않음" (AI가 직접 계산한 경우에만. BE 역산을 쓴 경우는 위의 BE 문구이며 `timetable_used`에 따라 달라진다). `estimated`는 BE가 시간표로 열차를 골라도 계획 시각이라 항상 `true`다.
 - 환승역은 검사하지 않는다. 대체역을 찾아도 경로·시간은 다시 계산하지 않는다.
 - **고장 역의 대체역만 알고 싶으면 `start_id == end_id`로 호출한다** (폴백 엔진과 LLM 도구 설명 모두 이 방식).
 
