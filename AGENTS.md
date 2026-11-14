@@ -88,6 +88,9 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 - 인코딩: 직접 작성하는 텍스트 파일은 **UTF-8**. UTF-16으로 저장하면 git이 바이너리로 취급한다.
 - 문서·주석·안내 문장은 한국어. 새 문서는 `docs/`에 만들고 레포 루트에 흩어 놓지 않는다.
 - 커밋 메시지는 `feat:`, `fix:`, `docs:`, `refactor:`, `test:` 접두어. PR은 `.github/pull_request_template.md` 양식.
+- **비밀·승인 규칙 (모든 에이전트 공통).** `.env`와 API 키(`FACTCHAT_*` 등)를 읽어 출력하거나 코드·로그·문서·커밋에 쓰지 않는다. 실제 LLM·외부 API 호출은 사용자 승인 후에만 한다(테스트는 `FakeLLM`과 녹화 픽스처로 돈다). BE의 `data/dev.db`에는 쓰지 않는다(BE를 띄울 때는 복사본을 `DATABASE_URL`로 지정).
+- **Git 규칙.** `main`에 직접 커밋하지 않고 브랜치로 작업해 PR을 연다. `git add -A`·`git add .` 대신 고친 파일만 이름으로 add한다. force push, `reset --hard`, PR 병합은 사용자가 명시 승인했을 때만 한다. 이미 병합된 브랜치를 base로 PR을 열지 않는다(병합돼도 main에 안 들어간다). 다른 사람·에이전트가 만든 수정·untracked 파일은 건드리지 않는다.
+- **Windows.** 한글 출력이 깨지면 `PYTHONIOENCODING=utf-8`을 붙이거나 파일로 저장해 UTF-8로 읽는다. 터미널은 PowerShell 또는 Git Bash다.
 
 ## 7. 아직 결정되지 않은 것 (임의로 정하지 말고 사용자에게 묻는다)
 
@@ -96,7 +99,7 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 - 대체역 우선순위: 거리 vs 같은 노선 (설계 검토 §4)
 - 서비스 문구의 "실시간" 표현 (운행 상태 원천 OA-15994는 매시 갱신), 휠체어 환승·이동 여유 시간 고정값 — `docs/DATA_SPEC.md` §8
 - (정해짐, 2026-11-14) 승강장 대기 시간은 5분(배차 3 + 여유 2)으로 통일. BE 기본값도 5분으로 바뀌었다(BE D15). AI는 도보 7·진입 3·대기 5·출구 3을 계속 명시해 보낸다(BE 기본값과 같음, 테스트로 고정).
-- (정해짐, 2026-11-15) BE 데이터 소스의 경로는 BE `/api/routes`, 출발 시각의 이동 시간은 그 `total_minutes`(BE D17). `BE_ROUTE_ESTIMATE` 설정은 없앴다. 역 목록은 BE 목록 API가 생길 때까지 ID 순차 조회 캐시를 쓴다.
+- (정해짐, 2026-11-15) BE 데이터 소스의 경로는 BE `/api/routes`, 출발 시각의 이동 시간은 그 `total_minutes`(BE D17). `BE_ROUTE_ESTIMATE` 설정은 없앴다. 역 목록은 아직 ID 순차 조회 캐시를 쓰지만, BE에 `GET /api/stations`(q 생략 = 전체 목록, D19)가 생겨 이 우회를 없앨 수 있다(§9).
 - (정해짐, 2026-11-14) AI는 BE API를 호출하고 대체역·출발 시각 계산은 BE가 한다 — BE가 API를 구현하고 `BE/docs/demo-handoff.md`에서 AI 입력으로 지정. 상태 TTL(120분, 임시)·역 ID(정수)·상태 표기는 BE 계약(`BE/docs/api-contract.md`)을 따른다.
 
 ## 8. 레포 밖 관련 문서
@@ -107,3 +110,17 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 - `../docs/decisions/001-ai-architecture-and-tool-design.md` — 아키텍처 결정 기록
 - `../docs/PROJECT-STATE.md` — 프로젝트 전체 진행 상황
 - `../FE/Prototype-v2/js/ai-agent.js` — 폴백 엔진의 원본 프로토타입 로직
+- `../BE/AGENTS.md`, `../BE/docs/api-contract.md` — BE 가이드와 API 계약. AI가 읽는 API의 응답 형식·문구는 BE가 정한다
+- `../FE/AGENTS.md` — FE 가이드. FE는 아직 목업 데이터로 동작하고 `/api/chat`에 붙지 않았다
+
+## 9. 이어서 할 일과 알려진 문제 (2026-11-15 기준)
+
+이슈 #6(경로·출발 시각 BE 연동)과 #12(실제 BE 녹화 픽스처)는 main에 들어갔다. 남은 것은 아래이며, 새 작업 전에 IMPLEMENTATION_STATUS §4.8·§4.10·§6을 읽는다.
+
+- **BE 확인 필요**: 새벽 03:00 도착 요청에 BE가 "맞는 열차 없음"이 아니라 그날 막차(00:46 탑승)를 고른다. AI는 이를 그대로 전하므로 운행 시간 밖 안내가 나가지 않는다(BE 의도 확인과 운행 종료 신호 필요, §6).
+- **역 목록**: `be_source.py`가 ID 순차 조회 캐시를 쓴다. BE `GET /api/stations`(D19)로 바꾸고 ID 연속 가정을 없앨 수 있다. 바꾸면 `tests/data/test_be_source.py`를 함께 고친다.
+- **선택된 열차 문구**: 본문은 확정된 시각처럼 읽히고 "계획 시각, 지연 미반영"·"방향 추정"은 `limitations` 줄에만 나온다. 본문에서 언급할지 팀과 정한다.
+- **픽스처 불일치**: `tests/data/fixtures/be_demo_responses.json`(역·엘리베이터)은 옛 BE 기준이라 강남이 `UNAVAILABLE`이고, 경로·출발 시각 녹화는 `UNCONFIRMED`다. 엘리베이터를 실제 수집(BE #44)한 뒤 다시 녹화한다.
+- **녹화하지 못한 것**: "경로 없음" 404(합성 응답), 엘리베이터 고장이 섞인 경로 경고(변형 응답). 엘리베이터 수집 뒤 실서버로 확인한다.
+- **Mock 금지**: 시연·서비스에서 Mock 데이터를 쓰지 않는 것이 대회 규칙이다. 기본 `AI_DATA_SOURCE`가 아직 `mock`이므로 시연 전에 `be`로 바꿀지 팀과 정한다.
+- **BE를 띄워 확인하는 방법(실제 응답 녹화·점검)**: `BE/data/dev.db`를 임시 폴더에 복사하고 `DATABASE_URL=sqlite:///<복사본 절대경로> uv run uvicorn app.main:app --port 8000`(BE 폴더에서)으로 띄운다. 이어서 `AI_DATA_SOURCE=be`, `BE_API_BASE_URL=http://127.0.0.1:8000`으로 `plan_trip`을 호출한다. 끝나면 서버를 끈다. 이 복사본에는 시간표는 있고 엘리베이터 상태는 없다.
