@@ -8,7 +8,7 @@
 우왕톤 7팀 "엘리베이터 지하철" 서비스의 **AI 파트**. 휠체어·유모차 이용자에게 지하철 엘리베이터 상태, 고장 시 대체역, 늦지 않는 출발 시각을 챗봇으로 안내한다.
 LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도구가 한다. LLM이 실패하면 규칙 기반 폴백 엔진이 같은 형식으로 답한다.
 
-현재 단계: Phase 1 완료(도구·폴백·테스트). Phase 2·3의 AI 내부 작업(`/api/chat` 오케스트레이터, 세션, 폴백 전환, 후처리 검증)과 50문항 벤치마크 구현. 응답 속도 옵션(역 사전 확인·템플릿 답변)을 넣어 `gemini-3.5-flash-lite` 조합이 P95 1.5초로 목표 안에 들었으나 기본값(`gpt-5.1`, 옵션 끔)은 팀 결정 대기. BE API 데이터 소스(`AI_DATA_SOURCE=be`)로 역·엘리베이터·대체역을 BE에서 읽고, 상태 판정은 BE 계약 규칙과 같다. 경로는 BE `/api/routes`(환승 포함), 출발 시각 역산은 BE `/api/departure-time`(경로 소요 시간·역 ID·AI 분 값 명시)으로 한다(이슈 #6, 계약 형식 스텁으로만 테스트). 기본 데이터 소스는 여전히 Mock(2호선 계산).
+현재 단계: Phase 1 완료(도구·폴백·테스트). Phase 2·3의 AI 내부 작업(`/api/chat` 오케스트레이터, 세션, 폴백 전환, 후처리 검증)과 50문항 벤치마크 구현. 응답 속도 옵션(역 사전 확인·템플릿 답변)을 넣어 `gemini-3.5-flash-lite` 조합이 P95 1.5초로 목표 안에 들었으나 기본값(`gpt-5.1`, 옵션 끔)은 팀 결정 대기. BE API 데이터 소스(`AI_DATA_SOURCE=be`)로 역·엘리베이터·대체역을 BE에서 읽고, 상태 판정은 BE 계약 규칙과 같다. 경로는 BE `/api/routes`(환승 포함), 출발 시각 역산은 BE `/api/departure-time`(경로 소요 시간·역 ID·AI 분 값 명시)으로 한다(이슈 #6·#12, 실제 BE 녹화 픽스처로 테스트). 기본 데이터 소스는 여전히 Mock(2호선 계산).
 상세 현황: [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md)
 
 ## 2. 읽는 순서
@@ -38,7 +38,7 @@ LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도�
 
 ```powershell
 pip install -r requirements.txt          # pydantic, openai, fastapi, uvicorn, httpx, pytest
-python -m pytest                         # 전체 테스트 (312건). 작업 전후로 반드시 실행
+python -m pytest                         # 전체 테스트 (324건). 작업 전후로 반드시 실행
 python scripts/run_server.py             # /api/chat 개발 서버 (http://127.0.0.1:8001, 키 없으면 폴백으로 응답)
                                          # BE 데이터로: .env에 AI_DATA_SOURCE=be (BE 서버 먼저 실행, BE/docs/demo-handoff.md)
 python scripts/llm_demo.py "사당역 엘리베이터 돼?"              # FactChat 게이트웨이 왕복 데모 (API 키 필요)
@@ -58,7 +58,7 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 | 엘리베이터 상태·고장 목록 | `src/tools/elevator.py` | `tests/tools/test_elevator.py`, IMPLEMENTATION_STATUS §2.2–2.3 |
 | 경로·시간·대체역 계산 | `src/tools/trip.py` | `tests/tools/test_trip.py`, IMPLEMENTATION_STATUS §2.4 |
 | 역·별칭·엘리베이터·대체역·시간 상수 | `src/data/mock_data.py` | `tests/data/test_mock_data.py`가 참조 무결성 검사 |
-| 데이터 소스 인터페이스·구현 (Mock/BE) | `src/data/source.py`, `mock_source.py`, `be_source.py` | `tests/data/test_data_source.py`, `test_be_source.py`(BE 실제 응답 픽스처, 경로는 계약 형식 합성 픽스처 `be_route_responses.json`), IMPLEMENTATION_STATUS §4.8. 도구·폴백은 `mock_data`를 직접 import하지 않는다 |
+| 데이터 소스 인터페이스·구현 (Mock/BE) | `src/data/source.py`, `mock_source.py`, `be_source.py` | `tests/data/test_data_source.py`, `test_be_source.py`(BE 실제 응답 픽스처: 경로·출발 시각은 dev.db 복사본, 역·엘리베이터는 데모 DB), IMPLEMENTATION_STATUS §4.8. 도구·폴백은 `mock_data`를 직접 import하지 않는다 |
 | 상태 판정 규칙·안내 문장·limitations | `src/tools/elevator.py` (`judge`, `describe_status`) | BE `docs/api-contract.md` §6과 같게 유지. `tests/tools/test_status_rules.py`, IMPLEMENTATION_STATUS §2.2·§4.9 |
 | `/api/chat` 처리 흐름·폴백 전환 | `src/llm/orchestrator.py`, `client.py` | `tests/llm/test_orchestrator.py`, IMPLEMENTATION_STATUS §4.1·4.3 |
 | 카드·액션 조립, 템플릿 문장 | `src/llm/response_builder.py` | IMPLEMENTATION_STATUS §4.2 |
@@ -73,7 +73,7 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 | 외부 데이터 원본 추가·교체 | `data/raw/`, `data/sources.json` | `docs/DATA_SPEC.md`, `scripts/check_raw_data.py`로 검증 |
 | 실험용 실행 스크립트 | `scripts/` | — |
 
-다음에 만들 것: 실제 BE 서버(경로 API 포함)로 경로·출발 시각을 확인하고 녹화 응답 픽스처로 교체(지금 경로 픽스처는 계약 형식 합성), 운행 시간 밖 판정(BE에 근거 값 요청 필요, IMPLEMENTATION_STATUS §6). 오케스트레이터 테스트는 실제 LLM 대신 `tests/llm/fake_llm.py`의 `FakeLLM`을 쓴다.
+다음에 만들 것: 운행 시간 밖 판정(BE에 근거 값 요청 필요, IMPLEMENTATION_STATUS §6). 오케스트레이터 테스트는 실제 LLM 대신 `tests/llm/fake_llm.py`의 `FakeLLM`을 쓴다.
 
 ## 6. 작업 규칙
 
