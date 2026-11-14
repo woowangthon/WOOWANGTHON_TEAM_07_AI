@@ -35,3 +35,19 @@ def test_chat_rejects_bad_time_format():
 
 def test_chat_requires_message():
     assert client().post("/api/chat", json={"session_id": "s1"}).status_code == 422
+
+
+def test_cors_preflight_allows_configured_origin():
+    no_key = OpenAICompatClient(api_key="", base_url="http://unused", model="none", timeout_seconds=1)
+    app = create_app(ChatOrchestrator(client=no_key, sessions=SessionStore()),
+                     cors_origins=["http://localhost:5500"])
+    res = TestClient(app).options("/api/chat", headers={
+        "Origin": "http://localhost:5500", "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type"})
+    assert res.status_code == 200
+    assert res.headers["access-control-allow-origin"] == "http://localhost:5500"
+
+
+def test_cors_default_allows_any_origin():
+    res = client().post("/api/chat", json={"message": "안녕"}, headers={"Origin": "null"})
+    assert res.headers["access-control-allow-origin"] == "*"

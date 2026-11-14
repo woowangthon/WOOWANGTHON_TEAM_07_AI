@@ -25,16 +25,31 @@ SYSTEM_PROMPT_TEMPLATE = """당신은 수도권 지하철 교통약자(휠체어
 - 최근 경로: {last_route_summary}"""
 
 
+# 역 사전 확인(LLM_PRERESOLVE)을 켰을 때만 붙이는 블록. 명세 §5.1
+PRERESOLVED_TEMPLATE = """
+
+[이번 문장에서 미리 확인한 역]
+{lines}
+- 위 역은 resolve_station을 다시 호출하지 말고 station_id를 바로 도구에 쓰십시오. 목록에 없는 역 이름이 문장에 있으면 그때만 resolve_station을 호출하십시오."""
+
+
 def build_system_prompt(
     current_time: str,
     last_station_id: Optional[str] = None,
     last_station_name: Optional[str] = None,
     last_route_summary: Optional[str] = None,
+    preresolved_lines: Optional[str] = None,
 ) -> str:
-    """세션 슬롯을 채운 시스템 프롬프트를 만듭니다."""
+    """세션 슬롯을 채운 시스템 프롬프트를 만듭니다.
+
+    preresolved_lines: 코드가 미리 확인한 역 목록(줄마다 "- 이름 → 결과"). 있으면 프롬프트 끝에 붙입니다.
+    """
     last_station = f"{last_station_name} ({last_station_id})" if last_station_id else "없음"
-    return SYSTEM_PROMPT_TEMPLATE.format(
+    prompt = SYSTEM_PROMPT_TEMPLATE.format(
         current_time=current_time,
         last_station=last_station,
         last_route_summary=last_route_summary or "없음",
     )
+    if preresolved_lines:
+        prompt += PRERESOLVED_TEMPLATE.format(lines=preresolved_lines)
+    return prompt

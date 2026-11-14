@@ -51,6 +51,9 @@ class FallbackEngine:
     RX_DEPARTURE_WEAK = re.compile(r"까지\s*가려면|도착하려면|까지\s*도착|에\s*도착|까지\s*가야")
     RX_ROUTE = re.compile(r"가는\s*길|경로|어떻게\s*가|환승|길\s*(좀\s*)?알려|가는\s*방법|가려면")
     RX_REFERENCE = re.compile(r"거기|그\s*역|그곳|그\s*쪽|그럼|그러면|그\s*데|여기")
+    # 지칭어가 도착지로 쓰인 경우 ("신촌에서 그 역까지") — 이때 문장의 다른 역은 출발역입니다.
+    RX_REFERENCE_AS_DEST = re.compile(r"(거기|그\s*역|그곳|그\s*쪽|여기)\s*(까지|으로|로)")
+    RX_LINE = re.compile(r"(?<!\d)([1-8])\s*호선")
 
     KOREAN_NUMS = {
         "한": 1, "두": 2, "세": 3, "네": 4, "다섯": 5, "여섯": 6,
@@ -282,7 +285,7 @@ class FallbackEngine:
             )
 
         if intent == "outages":
-            return cls._outages(session_id)
+            return cls._outages(session_id, text)
 
         if not stations:
             if mentions["unknown"]:
@@ -294,18 +297,21 @@ class FallbackEngine:
             return cls._resp(session_id, ask, "need_station", suggestions=_SUGGEST_START)
 
         if intent in ("departure", "route"):
-            return cls._trip(session_id, stations, parsed_time, ctx, now)
+            return cls._trip(session_id, stations, parsed_time, ctx, now, text)
 
         return cls._elevator(session_id, stations[0])
 
     @classmethod
-    def _outages(cls, session_id: str) -> ChatResponse:
-        res = get_broken_elevators()
-        tool_calls = [ToolCallRecord(name="get_broken_elevators", args={})]
+    def _outages(cls, session_id: str, text: str = "") -> ChatResponse:
+        m = cls.RX_LINE.search(text)
+        line_id = m.group(1) if m else None
+        res = get_broken_elevators(line_id)
+        tool_calls = [ToolCallRecord(name="get_broken_elevators", args={"line_id": line_id} if line_id else {})]
+        scope = f"{line_id}호선" if line_id else "수도권 지하철 1~8호선"
         if not res.outages:
             return cls._resp(
                 session_id,
-                "현재 수도권 지하철 1~8호선 모든 역의 엘리베이터가 정상 운행 중입니다 🙂",
+                f"현재 {scope} 모든 역의 엘리베이터가 정상 운행 중입니다 🙂",
                 "outages_empty", tool_calls=tool_calls,
                 suggestions=["강남역 엘리베이터 돼?", "사용법 알려줘"],
             )
@@ -314,7 +320,7 @@ class FallbackEngine:
         more = " 등" if res.count > 3 else ""
         return cls._resp(
             session_id,
-            f"현재 엘리베이터 이용이 어려운 역은 총 {res.count}곳입니다: {names}{more}.",
+            f"현재 {line_id + '호선에서 ' if line_id else ''}엘리베이터 이용이 어려운 역은 총 {res.count}곳입니다: {names}{more}.",
             "outages_list",
             tool_calls=tool_calls,
             actions=[
@@ -327,18 +333,23 @@ class FallbackEngine:
 
     @classmethod
     def _trip(cls, session_id: str, stations: List[dict], parsed_time: Optional[str],
-              ctx: Dict[str, Any], now: datetime) -> ChatResponse:
+              ctx: Dict[str, Any], now: datetime, text: str = "") -> ChatResponse:
         notes = []
         tool_calls = [ToolCallRecord(name="resolve_station", args={"query": s["name"]}) for s in stations[:2]]
         if len(stations) >= 2:
             origin_id, dest_id = stations[0]["id"], stations[1]["id"]
         else:
-            dest_id = stations[0]["id"]
             last_id = ctx.get("last_station_id")
-            origin_id = last_id if last_id and get_data_source().station(last_id) else None
-            if not origin_id:
-                origin_id = cls.DEFAULT_ORIGIN
-                notes.append(f"출발역이 지정되지 않아 {station_name(origin_id)}역 기준으로 안내합니다.")
+            last_id = last_id if last_id and get_data_source().station(last_id) else None
+            if last_id and cls.RX_REFERENCE_AS_DEST.search(text):
+                # "신촌에서 그 역까지": 말한 역이 출발, 지칭한 최근 역이 도착
+                origin_id, dest_id = stations[0]["id"], last_id
+            else:
+                dest_id = stations[0]["id"]
+                origin_id = last_id
+                if not origin_id:
+                    origin_id = cls.DEFAULT_ORIGIN
+                    notes.append(f"출발역이 지정되지 않아 {station_name(origin_id)}역 기준으로 안내합니다.")
 
         origin_name, dest_name = station_name(origin_id), station_name(dest_id)
         if origin_id == dest_id:
