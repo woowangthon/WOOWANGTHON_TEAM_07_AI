@@ -24,6 +24,7 @@ BE_LIMIT_TRAVEL_EXTERNAL = "예상 이동 시간은 외부에서 입력한 값�
 
 KST = timezone(timedelta(hours=9))
 KST_OFFSET = "+09:00"
+LIMIT_ALTERNATIVE_ACCESS = "대체역은 방향을 고려하지 않은 후보이며 승강장·반대 방면 환승·계단 없는 이동 동선은 검증되지 않음. 현재 역·노선·목적지·다음 정차역과 탑승 전인지 이동 중인지 알려주세요"
 
 
 def _unconfirmed_alt(alt_name: str) -> str:
@@ -54,7 +55,7 @@ def find_alternatives(station_id: str, target_type: str = "end") -> Tuple[List[D
             )
             for c in calc["candidates"]
         ]
-        return detours, list(calc.get("limitations") or [])
+        return detours, list(calc.get("limitations") or []) + ([LIMIT_ALTERNATIVE_ACCESS] if detours else [])
 
     entry = src.registered_alternative(station_id)
     if entry:
@@ -68,7 +69,7 @@ def find_alternatives(station_id: str, target_type: str = "end") -> Tuple[List[D
                 alternative_station_id=alt_id, alternative_station_name=alt_name,
                 surface_distance_m=entry["distance_m"], surface_walk_minutes=entry["walk_min"],
                 alternative_status=alt_status.overall_status, bus_tip=entry["tip"], reason=reason,
-            )], limitations
+            )], limitations + [LIMIT_ALTERNATIVE_ACCESS]
 
     for neighbor in src.neighbor_stations(station_id):
         status = get_elevator_status(neighbor)
@@ -78,8 +79,8 @@ def find_alternatives(station_id: str, target_type: str = "end") -> Tuple[List[D
                 target_type=target_type, broken_station_id=station_id,
                 alternative_station_id=neighbor, alternative_station_name=alt_name,
                 stops_away=1, alternative_status=status.overall_status,
-                bus_tip=f"인접한 {alt_name}역 엘리베이터 이용 권장 (지상 이동 거리 정보 없음)", reason=reason,
-            )], []
+                bus_tip=f"인접한 {alt_name}역 후보 (지상 이동 거리 정보 없음)", reason=reason,
+            )], [LIMIT_ALTERNATIVE_ACCESS]
     return [], []
 
 
@@ -206,7 +207,7 @@ def plan_trip(
             detours += alts if same_station else alts[:1]
             warnings.append(
                 f"{role_label}{status.station_name}역 엘리베이터에 이용 불가 구간이 있습니다. "
-                f"대체역({alts[0].alternative_station_name}역) 이용을 권장합니다."
+                f"대체역 후보는 {alts[0].alternative_station_name}역입니다. 이동 방면과 접근 가능한 동선은 확인이 필요합니다."
             )
         else:
             warnings.append(f"{role_label}{status.station_name}역 엘리베이터에 이용 불가 구간이 있습니다.")
@@ -365,6 +366,8 @@ def detour_text(d: dict) -> str:
         details.append(f"{d['stops_away']}정거장 거리")
     if d.get("same_line"):
         details.append("같은 노선")
-    if d.get("alternative_status") in ("AVAILABLE", "PARTIAL"):
+    if d.get("alternative_status") == "AVAILABLE":
         details.append("엘리베이터 가동 확인")
+    elif d.get("alternative_status") == "PARTIAL":
+        details.append("일부 엘리베이터 이용 불가")
     return f"{name}역 ({', '.join(details)})" if details else f"{name}역"

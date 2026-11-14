@@ -14,6 +14,7 @@ from ..models import ActionPayload, ChatResponse, ChatResponseMetadata, ToolCall
 from ..tools import get_broken_elevators, get_elevator_status, parse_hhmm, plan_trip, resolve_station
 from ..tools.elevator import describe_status, format_limitations
 from ..tools.trip import detour_text
+from ..tools.travel_context import directional_response
 
 
 def _station_vocab() -> List[Tuple[str, str]]:
@@ -251,7 +252,11 @@ class FallbackEngine:
             metadata.engine="fallback", fallback_used=True인 ChatResponse.
         """
         text = message.strip()
-        ctx = session_ctx or {}
+        ctx = session_ctx if session_ctx is not None else {}
+        directional = directional_response(text, session_id, ctx)
+        if directional:
+            directional.metadata.fallback_used = True
+            return directional
         now = cls._now_from(current_time)
 
         mentions = cls.extract_mentions(text)
@@ -399,9 +404,8 @@ class FallbackEngine:
         )]
         for d in plan.detours:
             actions.append(ActionPayload(
-                type="showAlternative", label=f"{d.alternative_station_name}역 우회 경로 보기",
-                payload={"from": d.broken_station_id, "to": d.alternative_station_id,
-                         "path": [d.broken_station_id, d.alternative_station_id]},
+                type="openStation", label=f"{d.alternative_station_name}역 후보 정보 보기",
+                payload={"station_id": d.alternative_station_id},
             ))
 
         return cls._resp(
@@ -429,13 +433,13 @@ class FallbackEngine:
             limitations += [x for x in plan.limitations if x not in limitations]
             if plan.detours:
                 d = plan.detours[0]
-                text += f"\n💡 **추천 대체역**: {detour_text(d.model_dump())}"
+                text += f"\n💡 **대체역 후보**: {detour_text(d.model_dump())}"
                 others = ", ".join(detour_text(x.model_dump()) for x in plan.detours[1:3])
                 if others:  # 데이터 소스가 후보를 여럿 주면(BE) LLM 경로 템플릿처럼 함께 안내
                     text += f"\n다른 후보: {others}"
                 actions.insert(0, ActionPayload(
-                    type="showAlternative", label="지도에서 우회 경로 보기",
-                    payload={"from": sid, "to": d.alternative_station_id, "path": [sid, d.alternative_station_id]},
+                    type="openStation", label=f"{d.alternative_station_name}역 후보 정보 보기",
+                    payload={"station_id": d.alternative_station_id},
                 ))
         text = "\n".join([text] + format_limitations(limitations))
 

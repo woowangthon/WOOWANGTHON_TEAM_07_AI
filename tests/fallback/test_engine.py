@@ -59,7 +59,7 @@ def test_process_alternative_shows_korean_name():
     resp = F.process("사당역 엘리베이터 고장났다는데 어디로 가야 해?")
     assert "방배역" in resp.text
     assert "bangbae" not in resp.text
-    assert resp.actions[0].type == "showAlternative"
+    assert resp.actions[0].type == "openStation"
     assert any(tc.name == "plan_trip" for tc in resp.tool_calls)
 
 

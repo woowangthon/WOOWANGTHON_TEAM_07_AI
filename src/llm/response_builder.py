@@ -77,9 +77,8 @@ def _transfer_note(transfers: int) -> str:
 def _detour_actions(detours: List[dict]) -> List[ActionPayload]:
     return [
         ActionPayload(
-            type="showAlternative", label=f"{d['alternative_station_name']}역 우회 경로 보기",
-            payload={"from": d["broken_station_id"], "to": d["alternative_station_id"],
-                     "path": [d["broken_station_id"], d["alternative_station_id"]]},
+            type="openStation", label=f"{d['alternative_station_name']}역 후보 정보 보기",
+            payload={"station_id": d["alternative_station_id"]},
         )
         for d in detours
     ]
@@ -131,7 +130,7 @@ def _elevator(r: ToolResult, results: List[ToolResult]) -> BuiltResponse:
         alt = _last(results, "plan_trip",
                     lambda x: x.args.get("start_id") == sid and x.args.get("end_id") == sid)
         if alt and alt.result["detours"]:
-            text += f"\n추천 대체역: {detour_text(alt.result['detours'][0])}"
+            text += f"\n대체역 후보: {detour_text(alt.result['detours'][0])}"
             actions = _detour_actions(alt.result["detours"][:1]) + actions
             limits += [x for x in alt.result.get("limitations", []) if x not in limits]
     return BuiltResponse("elevator_status", actions, suggestions, _with_limits(text, limits),
@@ -144,7 +143,7 @@ def _alternative_only(r: ToolResult) -> BuiltResponse:
     detours = r.result["detours"]
     limits = list(r.result.get("limitations", []))
     if detours:
-        text = f"{name}역 대체역으로 {detour_text(detours[0])}을 추천합니다."
+        text = f"{name}역 대체역 후보는 {detour_text(detours[0])}입니다."
         others = ", ".join(detour_text(d) for d in detours[1:3])
         if others:
             text += f" 다른 후보: {others}."

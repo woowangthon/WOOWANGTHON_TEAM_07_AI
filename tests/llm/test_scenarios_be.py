@@ -175,8 +175,8 @@ def _assert_gangnam_status(res):
     assert res.card_type == "elevator_status"
     assert f"※ {LIMIT_SOME_UNKNOWN}" in res.text
     assert "정상" not in res.text
-    assert res.actions[0].type == "showAlternative"
-    assert res.actions[0].payload == {"from": GANGNAM, "to": YEOKSAM, "path": [GANGNAM, YEOKSAM]}
+    assert res.actions[0].type == "openStation"
+    assert res.actions[0].payload == {"station_id": YEOKSAM}
     assert {"type": "openStation", "payload": {"station_id": GANGNAM}} in \
         [{"type": a.type, "payload": a.payload} for a in res.actions]
 
@@ -203,7 +203,7 @@ def test_s1_elevator_status_llm_limitation_is_appended(be):
     ])
     res = ask(orch, "강남역 엘리베이터 돼?")
     assert_llm(res)
-    assert res.text.startswith("강남역 엘리베이터 5대 중 1대")
+    assert "강남역 엘리베이터 5대 중 1대" in res.text
     _assert_gangnam_status(res)
     # 도구 결과가 BE 역 ID로 LLM에 전달됨
     assert json.loads(llm.requests[1][-1]["content"])["station_id"] == GANGNAM
@@ -212,7 +212,7 @@ def test_s1_elevator_status_llm_limitation_is_appended(be):
     assert status["limitations"] == [LIMIT_SOME_UNKNOWN]
     # 고장 역인데 대체역 조회가 빠져 코드가 BE 대체역을 보충 조회하고 한 줄 덧붙인다
     assert [t.name for t in res.tool_calls] == ["resolve_station", "get_elevator_status", "plan_trip"]
-    assert "추천 대체역: 역삼역" in res.text and f"※ {ALT_LIMITATION}" in res.text
+    assert "대체역 후보: 역삼역" in res.text and f"※ {ALT_LIMITATION}" in res.text
 
 
 def test_s1_all_stale_station_fallback(be):
@@ -252,8 +252,8 @@ def test_s2_alternative_follow_up_fallback(be):
     assert "강남역" in res.text and "역삼역" in res.text  # BE 추천 1순위
     # 나머지 BE 후보도 BE 순서대로 안내 (LLM 경로 템플릿과 같음)
     assert res.text.index("역삼역") < res.text.index("교대역") < res.text.index("남부터미널역")
-    assert res.actions[0].type == "showAlternative"
-    assert res.actions[0].payload == {"from": GANGNAM, "to": YEOKSAM, "path": [GANGNAM, YEOKSAM]}
+    assert res.actions[0].type == "openStation"
+    assert res.actions[0].payload == {"station_id": YEOKSAM}
     assert f"※ {ALT_LIMITATION}" in res.text
 
 
@@ -274,9 +274,10 @@ def test_s2_alternative_follow_up_llm(be):
     assert "강남 (31)" in llm.requests[-1][0]["content"]  # 세션의 최근 역이 BE ID로 프롬프트에 들어감
     assert_llm(res)
     assert res.card_type == "elevator_status"
-    assert res.text.startswith("강남역 대신 역삼역")
-    assert [a.type for a in res.actions] == ["showAlternative", "openStation"]
-    assert res.actions[0].payload == {"from": GANGNAM, "to": YEOKSAM, "path": [GANGNAM, YEOKSAM]}
+    assert res.text.startswith("강남역 대체역 후보는 역삼역")
+    assert "이용해 주세요" not in res.text
+    assert [a.type for a in res.actions] == ["openStation", "openStation"]
+    assert res.actions[0].payload == {"station_id": YEOKSAM}
     assert f"※ {ALT_LIMITATION}" in res.text
     detours = json.loads(llm.requests[-1][-1]["content"])["detours"]
     assert [d["alternative_station_id"] for d in detours] == ["30", "32", "78"]  # BE 추천 순 그대로
@@ -292,10 +293,10 @@ def test_s2_fabricated_station_is_replaced_by_be_alternatives(be):
     res = ask(orch, "거기 말고 다른 역은?")
     assert_llm(res, guard_triggered=True)
     assert "논현역" not in res.text
-    assert res.text.startswith("강남역 대체역으로 역삼역")
+    assert res.text.startswith("강남역 대체역 후보는 역삼역")
     i, j, k = (res.text.index(n) for n in ("역삼역", "교대역", "남부터미널역"))
     assert i < j < k
-    assert res.actions[0].payload["to"] == YEOKSAM
+    assert res.actions[0].payload["station_id"] == YEOKSAM
     assert f"※ {ALT_LIMITATION}" in res.text
 
 

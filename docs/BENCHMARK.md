@@ -3,6 +3,8 @@
 > 명세 [`AI_DEVELOPMENT_SPEC.md` §8](./AI_DEVELOPMENT_SPEC.md)의 50문항 평가를 실행하는 방법과 결과를 기록한다.
 > 결과 숫자는 실제로 돌린 값만 적는다. 실행할 때마다 날짜·엔진·모델과 함께 §4에 추가한다.
 
+2026-11-15 방면 안전 변경 후 회귀 실행: `AI_DATA_SOURCE=mock`, `run_benchmark.py --engine fallback --quiet`로 기존 50문항 50/50 통과, 도구 선택/카드/문장 검사 100%, 슬롯 F1 1.00, P50/P95 0/0ms를 확인했다. LLM 호출 0, 폴백 50건(`not_configured`)이다. 기존 문항에는 새 방향 맥락 수집 시나리오가 없어 해당 기능은 별도 회귀 테스트 10개와 다중 턴 HTTP 회귀 1개로 검증했다. 전체 pytest 결과는 335개 통과다. [상세 분석과 범위](./directional-alternatives-analysis.md).
+
 ---
 
 ## 1. 실행
