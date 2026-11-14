@@ -1,0 +1,78 @@
+{
+ "_source": "BE 데모 서버 POST /api/departure-time 로컬 실제 응답, 2026-11-14. 요청은 arrival_at과 travel_minutes만 보내고 나머지는 BE 기본값",
+ "request": {
+  "arrival_at": "2026-12-01T15:00:00+09:00",
+  "travel_minutes": 20
+ },
+ "response": {
+  "recommended_departure_at": "2026-12-01T14:27:00+09:00",
+  "estimated_boarding_at": "2026-12-01T14:37:00+09:00",
+  "estimated_alighting_at": "2026-12-01T14:57:00+09:00",
+  "arrival_at": "2026-12-01T15:00:00+09:00",
+  "total_minutes": 33,
+  "date_changed": false,
+  "already_past": false,
+  "estimated": true,
+  "timetable_used": false,
+  "inputs": {
+   "travel_minutes": 20,
+   "buffer_minutes": 0,
+   "walk_to_station_minutes": 7,
+   "station_entry_minutes": 3,
+   "exit_walk_minutes": 3
+  },
+  "defaults_applied": [
+   "walk_to_station_minutes",
+   "station_entry_minutes",
+   "exit_walk_minutes"
+  ],
+  "timeline": [
+   {
+    "kind": "WALK_TO_STATION",
+    "label": "집에서 역까지 도보",
+    "start_at": "2026-12-01T14:27:00+09:00",
+    "end_at": "2026-12-01T14:34:00+09:00",
+    "minutes": 7
+   },
+   {
+    "kind": "STATION_ENTRY",
+    "label": "역 진입",
+    "start_at": "2026-12-01T14:34:00+09:00",
+    "end_at": "2026-12-01T14:37:00+09:00",
+    "minutes": 3
+   },
+   {
+    "kind": "BUFFER",
+    "label": "여유 시간",
+    "start_at": "2026-12-01T14:37:00+09:00",
+    "end_at": "2026-12-01T14:37:00+09:00",
+    "minutes": 0
+   },
+   {
+    "kind": "RIDE",
+    "label": "열차 이동(외부 입력 예상 시간)",
+    "start_at": "2026-12-01T14:37:00+09:00",
+    "end_at": "2026-12-01T14:57:00+09:00",
+    "minutes": 20
+   },
+   {
+    "kind": "EXIT_WALK",
+    "label": "출구 이동",
+    "start_at": "2026-12-01T14:57:00+09:00",
+    "end_at": "2026-12-01T15:00:00+09:00",
+    "minutes": 3
+   }
+  ],
+  "elevator_warning": {
+   "status": "UNCONFIRMED",
+   "items": [],
+   "message": "역·설비 상태 정보가 입력되지 않아 엘리베이터 경고를 확인하지 못함"
+  },
+  "limitations": [
+   "실제 열차 시간표를 사용하지 않은 추정 계산이며 탑승 가능한 열차는 확인되지 않음",
+   "예상 이동 시간은 외부에서 입력한 값이며 경로 탐색으로 검증되지 않음",
+   "도보·역 진입·출구 이동 시간은 추정값이며 개인과 상황에 따라 다를 수 있음",
+   "역·설비 상태 정보가 입력되지 않아 엘리베이터 경고를 확인하지 못함"
+  ]
+ }
+}

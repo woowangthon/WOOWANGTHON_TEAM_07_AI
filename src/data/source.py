@@ -13,7 +13,8 @@
 계산 위치:
     - 역·엘리베이터·대체역 후보·경로처럼 "데이터에서 찾는 것"은 데이터 소스가 맡습니다.
       (BE 연동 후에는 BE API가 계산한 결과를 돌려줍니다.)
-    - 상태 판정(PARTIAL 등), 출발 시각 역산, 안내 문장 조립은 도구가 맡습니다.
+    - 상태 판정(PARTIAL 등), 안내 문장 조립은 도구가 맡습니다.
+    - 출발 시각 역산은 데이터 소스가 계산하면(BE `departure_estimate`) 그 결과를, 아니면(Mock) 도구가 계산합니다.
 """
 
 import os
@@ -84,6 +85,19 @@ class DataSource(Protocol):
 
     def timing(self) -> Dict[str, int]:
         """시간 계산 상수 (분). 키는 mock_data.TIMING_PARAMS와 같음."""
+
+    def departure_estimate(
+        self, arrival_at_iso: str, travel_minutes: int, buffer_minutes: int,
+        walk_minutes: int, entry_minutes: int, exit_minutes: int,
+    ) -> Optional[dict]:
+        """도착 희망 시각에서 거꾸로 계산한 권장 출발 시각. 계산 기능이 없으면 None (도구가 직접 계산).
+
+        arrival_at_iso: 오프셋이 있는 ISO 8601 초 단위 (예: "2026-12-01T15:00:00+09:00").
+        반환 형식: BE `POST /api/departure-time` 응답 (BE/docs/api-contract.md §8.2)
+            {"recommended_departure_at", "estimated_boarding_at", "estimated_alighting_at", "arrival_at",
+             "total_minutes", "limitations": [str, ...], ...}  시각은 KST(+09:00) ISO 문자열.
+        모든 분 값은 호출하는 쪽(도구)이 정해서 보냅니다. 데이터 소스의 기본값에 맡기지 않습니다.
+        """
 
 
 def _create(name: str) -> DataSource:

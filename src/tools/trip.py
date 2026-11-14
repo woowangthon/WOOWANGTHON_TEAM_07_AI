@@ -1,15 +1,22 @@
 """도구 4: plan_trip — 경로 탐색 + 엘리베이터 우회 + 출발 시각 역산 통합. 명세 §3.4"""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
-from ..data import get_data_source, station_name
+from ..data import DataUnavailableError, get_data_source, station_name
 from ..models import DetourInfo, PlanTripOutput, RouteInfo, RouteLeg, TripBreakdown
 from .common import parse_hhmm
 from .elevator import get_elevator_status
 
-# 추정 계산 안내 (BE /api/departure-time의 limitations와 같은 취지)
+# 추정 계산 안내 (BE /api/departure-time의 limitations와 같은 취지). AI가 직접 역산할 때만 붙입니다.
 LIMIT_ESTIMATED = "열차 시간표와 실제 경로 탐색을 쓰지 않은 추정 계산이며 탑승 가능한 열차는 확인되지 않음"
+
+# BE /api/departure-time limitations 중 plan_trip이 전하지 않는 문구 (BE status_messages.py와 같은 문장)
+BE_LIMIT_ELEVATOR_UNCONFIRMED = "역·설비 상태 정보가 입력되지 않아 엘리베이터 경고를 확인하지 못함"
+BE_LIMIT_ALREADY_PAST = "추천 출발 시각이 현재 시각보다 이미 지났음"
+
+KST = timezone(timedelta(hours=9))
+KST_OFFSET = "+09:00"
 
 
 def _unconfirmed_alt(alt_name: str) -> str:
@@ -92,6 +99,11 @@ def plan_trip(
     모드:
         arrive_by 있음 → 역산. 도착 시각이 이미 지났으면 다음 날로 간주합니다.
         arrive_by 없음 → 순방향. depart_at(없으면 현재 시각)부터 계산합니다.
+
+    출발 시각 역산 위치:
+        데이터 소스가 역산하면(BE `POST /api/departure-time`) 그 결과 시각을 씁니다 (time_source="BE").
+        보내는 분 값(도보·역 진입·최악 대기·열차 이동·출구)은 위 공식의 AI 값이므로 결과는 직접 계산과 같습니다.
+        역산 모드이고 경로가 있으며 출발역≠도착역일 때만 호출합니다. 그 밖에는 직접 계산 (time_source="AI").
 
     Args:
         now: 기준 시각. LLM에 노출되지 않는 인자로, 테스트나 요청의 current_time을 넣을 때 씁니다.
@@ -176,21 +188,45 @@ def plan_trip(
     before_board = breakdown.home_walk + breakdown.station_entry_elevator + breakdown.worst_case_wait
     total = before_board + breakdown.subway_ride + breakdown.transfer_walk + breakdown.exit_elevator
 
+    be_estimate: Optional[dict] = None
     if arrive_hm:
         arrive_dt = now.replace(hour=arrive_hm[0], minute=arrive_hm[1])
         if arrive_dt < now:
             arrive_dt += timedelta(days=1)
-        leave_dt = arrive_dt - timedelta(minutes=total)
-        minutes_from_now = int((leave_dt - now).total_seconds() // 60)
+        if is_possible and not same_station and ride_min > 0:
+            # 데이터 소스(BE)가 역산하면 그 결과를 씁니다. 분 값은 모두 AI 값을 명시해서 보냅니다
+            # (BE 기본값, 특히 여유 시간 0분에 맡기지 않음). Mock은 None → 아래에서 직접 계산.
+            be_estimate = src.departure_estimate(
+                arrive_dt.strftime("%Y-%m-%dT%H:%M:00") + KST_OFFSET,
+                travel_minutes=ride_min,
+                buffer_minutes=breakdown.worst_case_wait,
+                walk_minutes=breakdown.home_walk,
+                entry_minutes=breakdown.station_entry_elevator,
+                exit_minutes=breakdown.exit_elevator,
+            )
+        if be_estimate is not None:
+            leave_dt = _kst_naive(be_estimate["recommended_departure_at"])
+            board_dt = _kst_naive(be_estimate["estimated_boarding_at"])
+            arrive_dt = _kst_naive(be_estimate["arrival_at"])
+        else:
+            leave_dt = arrive_dt - timedelta(minutes=total)
+            board_dt = leave_dt + timedelta(minutes=before_board)
     else:
         leave_dt = now.replace(hour=depart_hm[0], minute=depart_hm[1]) if depart_hm else now
         arrive_dt = leave_dt + timedelta(minutes=total)
-        minutes_from_now = int((leave_dt - now).total_seconds() // 60)
+        board_dt = leave_dt + timedelta(minutes=before_board)
+    # 남은 시간·지각 판정은 AI의 기준 시각(now)으로 합니다. BE already_past는 BE 서버 시계 기준이라 쓰지 않습니다.
+    minutes_from_now = int((leave_dt - now).total_seconds() // 60)
+
+    if be_estimate is not None:
+        time_limits = _be_time_limitations(be_estimate)
+    else:
+        time_limits = [LIMIT_ESTIMATED] if (is_possible and not same_station) else []
 
     return PlanTripOutput(
         is_possible=is_possible,
         departure_time=leave_dt.strftime("%H:%M"),
-        board_time=(leave_dt + timedelta(minutes=before_board)).strftime("%H:%M"),
+        board_time=board_dt.strftime("%H:%M"),
         arrival_time=arrive_dt.strftime("%H:%M"),
         minutes_from_now=minutes_from_now,
         # 지각 판정은 도착 목표가 있는 역산 모드에서만 의미가 있습니다.
@@ -200,8 +236,34 @@ def plan_trip(
         breakdown=breakdown,
         warnings=warnings,
         estimated=True,
-        limitations=([LIMIT_ESTIMATED] if (is_possible and not same_station) else []) + limitations,
+        limitations=list(dict.fromkeys(time_limits + limitations)),
+        time_source="BE" if be_estimate is not None else "AI",
     )
+
+
+def _kst_naive(iso: str) -> datetime:
+    """BE ISO 시각(오프셋 포함)을 KST 기준 naive datetime으로 바꿉니다 (plan_trip의 now와 같은 기준)."""
+    try:
+        dt = datetime.fromisoformat(iso)
+    except (TypeError, ValueError) as e:
+        raise DataUnavailableError(f"BE 응답 해석 실패 (/api/departure-time): 시각 형식 {iso!r}") from e
+    if dt.tzinfo is None:
+        raise DataUnavailableError(f"BE 응답 해석 실패 (/api/departure-time): 오프셋 없는 시각 {iso!r}")
+    return dt.astimezone(KST).replace(tzinfo=None)
+
+
+def _be_time_limitations(estimate: dict) -> List[str]:
+    """BE 역산 응답의 limitations 중 사용자에게 전할 것.
+
+    빼는 것:
+        - 엘리베이터 미확인 문구: BE가 역 상태를 받지 않아 붙는 문구. 역 상태는 plan_trip이 직접 확인해 따로 알립니다.
+        - 이미 지났음 문구: BE 서버 시계 기준. 지각 여부는 AI 기준 시각으로 is_late에 담습니다.
+    """
+    drop = {BE_LIMIT_ELEVATOR_UNCONFIRMED, BE_LIMIT_ALREADY_PAST}
+    message = (estimate.get("elevator_warning") or {}).get("message")
+    if message:
+        drop.add(message)
+    return [x for x in (estimate.get("limitations") or []) if isinstance(x, str) and x not in drop]
 
 
 def detour_text(d: dict) -> str:

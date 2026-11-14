@@ -2,8 +2,9 @@
 
     AI_DATA_SOURCE=be, BE_API_BASE_URL=http://127.0.0.1:8000
 
-BE가 맡는 것: 역 목록·ID, 엘리베이터 설비 상태(가동중/가동 안됨/미확인 판정, TTL), 대체역 후보(BFS).
-AI에 남는 것: 별칭·미지원 키워드(문장 해석용), 경로·소요 시간(BE 경로 API #37 전까지 Mock 2호선 계산).
+BE가 맡는 것: 역 목록·ID, 엘리베이터 설비 상태(가동중/가동 안됨/미확인 판정, TTL), 대체역 후보(BFS),
+    도착 시각 기준 출발 시각 역산(POST /api/departure-time, 분 값은 AI가 보냄).
+AI에 남는 것: 별칭·미지원 키워드(문장 해석용), 경로·열차 이동 시간(BE 경로 API #37 전까지 Mock 2호선 계산).
 
 변환 규칙:
     - 역 ID: BE 정수 station_id를 문자열로 ("35"). LLM 도구 인자와 FE payload에 그대로 씁니다.
@@ -68,6 +69,27 @@ class BeDataSource:
             return r.json()
         except ValueError as e:
             raise DataUnavailableError(f"BE 응답 해석 실패 ({path})") from e
+
+    def _post(self, path: str, body: dict) -> dict:
+        """POST 요청(JSON 본문). 200이 아니거나 해석할 수 없으면 DataUnavailableError.
+
+        422는 AI가 계약에 맞지 않는 값을 보낸 것(프로그램 오류)이므로 따로 밝힙니다.
+        """
+        try:
+            r = self._http.post(path, json=body)
+        except httpx.HTTPError as e:
+            raise DataUnavailableError(f"BE 연결 실패 ({path}): {type(e).__name__}") from e
+        if r.status_code == 422:
+            raise DataUnavailableError(f"BE 요청 형식 오류 ({path}): HTTP 422 — AI가 보낸 값이 계약과 맞지 않음")
+        if r.status_code != 200:
+            raise DataUnavailableError(f"BE 응답 오류 ({path}): HTTP {r.status_code}")
+        try:
+            data = r.json()
+        except ValueError as e:
+            raise DataUnavailableError(f"BE 응답 해석 실패 ({path})") from e
+        if not isinstance(data, dict):
+            raise DataUnavailableError(f"BE 응답 해석 실패 ({path}): 객체가 아님")
+        return data
 
     def _load_catalog(self) -> Dict[str, dict]:
         if self._catalog is not None:
@@ -196,3 +218,25 @@ class BeDataSource:
 
     def timing(self) -> Dict[str, int]:
         return self._mock.timing()
+
+    # --- 출발 시각 ---
+    def departure_estimate(self, arrival_at_iso: str, travel_minutes: int, buffer_minutes: int,
+                           walk_minutes: int, entry_minutes: int, exit_minutes: int) -> Optional[dict]:
+        """BE `POST /api/departure-time` (계약 §8.2)으로 권장 출발 시각을 계산합니다.
+
+        분 값은 모두 명시해서 보냅니다 (BE 기본값, 특히 buffer 0분에 맡기지 않음).
+        응답에 필요한 시각 필드가 없으면 해석 실패로 봅니다.
+        """
+        body = {
+            "arrival_at": arrival_at_iso,
+            "travel_minutes": travel_minutes,
+            "buffer_minutes": buffer_minutes,
+            "walk_to_station_minutes": walk_minutes,
+            "station_entry_minutes": entry_minutes,
+            "exit_walk_minutes": exit_minutes,
+        }
+        d = self._post("/api/departure-time", body)
+        required = ("recommended_departure_at", "estimated_boarding_at", "arrival_at")
+        if any(not isinstance(d.get(k), str) for k in required):
+            raise DataUnavailableError("BE 응답 해석 실패 (/api/departure-time): 시각 필드 없음")
+        return d

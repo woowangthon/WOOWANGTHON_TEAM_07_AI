@@ -283,9 +283,11 @@ sequenceDiagram
     "estimated": true,             # 시간표·실측이 아닌 추정 계산 (현재 항상 true)
     "limitations": [               # 사용자에게 그대로 전할 한계 안내
       "열차 시간표와 실제 경로 탐색을 쓰지 않은 추정 계산이며 탑승 가능한 열차는 확인되지 않음"
-    ]
+    ],
+    "time_source": "AI"            # 시각을 계산한 곳: "AI"(도구 직접 계산) | "BE"(BE /api/departure-time 역산)
   }
   ```
+- 역산 모드에서 BE 데이터 소스를 쓰면 출발 시각은 BE `POST /api/departure-time`이 계산한다(`time_source="BE"`). 분 값은 모두 AI 값을 보내므로 시각은 직접 계산과 같고, `limitations`는 BE 문구(시간표 미사용, 이동 시간 외부 입력, 도보·진입·출구 추정)로 바뀐다.
 - 출발역·도착역 상태가 `UNKNOWN`이면 대체역을 붙이지 않고 `limitations`에 "○○역 엘리베이터 상태를 확인하지 못함"을 넣는다. 대체역은 이용 불가가 확인된 경우에만 찾는다.
 - 출발역=도착역(대체역만 묻는 경우)은 대체역 후보를 모두 `detours`에 담는다 (BE 연동 시 BE 추천 순).
 

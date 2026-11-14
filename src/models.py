@@ -174,6 +174,9 @@ class PlanTripOutput(BaseModel):
     limitations: List[str] = Field(
         default_factory=list, description="사용자에게 그대로 전할 한계 안내 문장 (추정 계산, 미확인 상태 등)"
     )
+    time_source: Literal["AI", "BE"] = Field(
+        "AI", description="출발·탑승·도착 시각을 계산한 곳. BE면 BE /api/departure-time 역산 결과 (분 값은 AI가 보냄)"
+    )
 
 
 # -----------------------------------------------------------------------------

@@ -70,3 +70,8 @@ class MockDataSource:
 
     def timing(self) -> Dict[str, int]:
         return md.TIMING_PARAMS
+
+    def departure_estimate(self, arrival_at_iso: str, travel_minutes: int, buffer_minutes: int,
+                           walk_minutes: int, entry_minutes: int, exit_minutes: int) -> Optional[dict]:
+        """Mock은 출발 시각을 계산하지 않습니다 (plan_trip이 직접 역산)."""
+        return None
