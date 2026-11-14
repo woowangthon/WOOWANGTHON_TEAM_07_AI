@@ -3,7 +3,7 @@
 > 이 문서는 **현재 코드가 실제로 어떻게 동작하는지**를 정리한다. 목표 설계는 [`AI_DEVELOPMENT_SPEC.md`](./AI_DEVELOPMENT_SPEC.md)에 있다.
 > 코드 동작을 바꾸면 이 문서의 해당 절도 같이 고친다.
 >
-> 최종 갱신: 2026-11-15 · 단위 테스트 324건 통과 (skip 없음)
+> 최종 갱신: 2026-11-15 · 단위 테스트 335건 통과. 방면 대체역 안전 안내와 다중 턴 입력 수집 추가. 상세 분석은 [directional-alternatives-analysis.md](./directional-alternatives-analysis.md).
 
 ---
 
@@ -124,7 +124,7 @@ BE 경로면 위 식의 "정거장 수 × 2"는 BE `total_minutes`(열차 이동
 **엘리베이터 우회**
 
 - 출발역과 도착역(같은 역이면 한 번)의 상태가 `PARTIAL`/`UNAVAILABLE`이면 `find_alternatives`로 대체역을 찾아 `detours`(`target_type` = `start`/`end`)와 `warnings`에 넣는다. 출발=도착이면 후보를 모두, 경로면 첫 후보만 넣는다.
-  - 데이터 소스가 대체역을 계산하면(BE `/alternatives`) 그 결과와 `limitations`를 그대로 쓴다.
+  - 데이터 소스가 대체역을 계산하면(BE `/alternatives`) 후보 순서와 기존 `limitations`를 유지하며, 방면·승강장·반대편 환승·계단 없는 동선 미검증 안내를 추가한다. 첫 후보가 현재 이동 방향에 맞는다는 뜻은 아니다.
   - Mock: (1) `ALTERNATIVES`에 등록된 안내. 대체역이 고장으로 확인되면 제외하고, 상태가 미확인이면 `limitations`에 "대체역 ○○역의 엘리베이터 상태는 확인되지 않음". (2) 없으면 순환선 양옆 역 중 가동이 **확인된** 역(`AVAILABLE`/`PARTIAL`).
   - 거리·도보 시간은 확인된 값만 넣는다(없으면 `None`). 예전의 기본값 800m / 10분은 없앴다.
 - 상태가 `UNKNOWN`인 역에는 대체역을 붙이지 않고 `limitations`에 "○○역 엘리베이터 상태를 확인하지 못함"을 넣는다. 일부만 확인된 역은 "○○역: 일부 설비 상태가 …".
@@ -186,10 +186,10 @@ BE 경로면 위 식의 "정거장 수 × 2"는 BE `total_minutes`(열차 이동
 | `outages_list` / `outages_empty` | 고장 목록 의도 | `get_broken_elevators` (문장에 `N호선`이 있으면 `line_id=N`) | 상위 3역 `openStation` |
 | `out_of_coverage` | 미지원 지역/노선 언급 | (`resolve_station` 기록만) | — |
 | `need_station` | 필요한 역을 알 수 없음, 사전에 없는 역, 출발=도착 | — | — |
-| `trip_plan` | departure/route | `resolve_station`, `plan_trip` | `openTime`, 대체역마다 `showAlternative` |
+| `trip_plan` | departure/route | `resolve_station`, `plan_trip` | `openTime`, 대체역마다 `openStation` 후보 상세 |
 | `trip_unsupported` | `plan_trip`이 `is_possible=False` | 〃 | — |
 | `data_unavailable` | 데이터 소스(BE) 장애 (오케스트레이터가 만듦, §4.9) | — | — |
-| `elevator_status` | elevator/alternative | `resolve_station`, `get_elevator_status`, 고장이면 `plan_trip(sid, sid)` | 대체역 있으면 `showAlternative`, `openStation` |
+| `elevator_status` | elevator/alternative | `resolve_station`, `get_elevator_status`, 고장이면 `plan_trip(sid, sid)` | 고장역과 후보역의 `openStation` |
 
 - departure/route의 출발·도착: 역 2개 → 앞이 출발. 역 1개 → 도착역, 출발은 `last_station_id` 또는 신도림(이 경우 "출발역이 지정되지 않아 신도림역 기준으로 안내합니다" 문구 포함).
   - 단, 역 1개와 함께 지칭어가 도착지로 쓰이면("신촌에서 **그 역까지**", "거기로") 말한 역이 출발, `last_station_id`가 도착이다.
@@ -208,7 +208,7 @@ BE 경로면 위 식의 "정거장 수 × 2"는 BE `total_minutes`(열차 이동
 2. LLM에 `TOOL_SPECS`와 함께 보낸다. 응답에 도구 호출이 있으면 `execute_tool`로 실행하고 결과를 `tool` 메시지로 붙여 다시 보낸다. 최대 `LLM_MAX_TOOL_ROUNDS`(기본 4)회.
 3. 도구 호출 없이 문장이 오면 끝. `card_type`·`actions`·`suggestions`는 도구 결과로 코드가 만든다 (§4.2).
    - **대체역 보충**: 엘리베이터 이용 불가 구간이 있는 역(`PARTIAL`/`UNAVAILABLE`)을 조회했는데 LLM이 그 역의 대체역(`plan_trip(sid, sid)`)을 부르지 않았으면, 코드가 직접 조회해 `tool_calls`에 추가한다. 경로 질문(`plan_trip`, 출발≠도착)이 있으면 그 결과에 대체역이 이미 있으므로 보충하지 않는다.
-   - 보충한 대체역이 LLM 문장에 없으면 "💡 추천 대체역: ○○역 (안내 문구)" 한 줄을 도구 결과로 덧붙인다.
+   - 대체역이 포함되면 코드 템플릿으로 “대체역 후보”와 미검증 조건을 알린다. 역명·시각이 맞더라도 LLM의 하차/반대편 환승 지시는 그대로 출력하지 않는다.
    - **limitations 강제**: 도구 결과의 `limitations` 문장이 LLM 문장에 그대로 없으면 "※ …" 줄로 덧붙인다 (BE 계약 R9. LLM이 "확인되지 않음"을 빼고 요약하지 못하게).
 4. 후처리 검증(§4.5)에 걸리면 LLM 문장을 버리고 도구 결과로 만든 템플릿 문장을 쓴다. 검증 근거는 LLM이 실제로 본 도구 결과뿐이며, 보충 조회 결과는 템플릿에만 쓴다.
 5. 세션 슬롯을 갱신하고(§4.4) `metadata.latency_ms`를 기록한다.
@@ -224,9 +224,9 @@ BE 경로면 위 식의 "정거장 수 × 2"는 BE `total_minutes`(열차 이동
 
 | 순서 | 근거 | card_type | 액션 |
 |---|---|---|---|
-| 1 | `plan_trip` (출발≠도착) | `trip_plan` / `trip_unsupported` | `openTime`, 대체역마다 `showAlternative` |
-| 2 | `get_elevator_status` | `elevator_status` | 같은 역 `plan_trip(sid, sid)`에 대체역이 있으면 `showAlternative`, 그리고 `openStation` |
-| 3 | `plan_trip` (출발=도착, 대체역만) | `elevator_status` | `showAlternative`, `openStation` |
+| 1 | `plan_trip` (출발≠도착) | `trip_plan` / `trip_unsupported` | `openTime`, 후보 상세 `openStation` |
+| 2 | `get_elevator_status` | `elevator_status` | 고장역과 후보역의 `openStation` |
+| 3 | `plan_trip` (출발=도착, 대체역만) | `elevator_status` | 고장역과 후보역의 `openStation` |
 | 4 | `get_broken_elevators` | `outages_list` / `outages_empty` | 상위 3역 `openStation` |
 | 5 | `resolve_station` OUT_OF_COVERAGE | `out_of_coverage` | — |
 | 6 | `resolve_station` NOT_FOUND | `need_station` | — |
@@ -255,10 +255,11 @@ BE 경로면 위 식의 "정거장 수 × 2"는 BE `total_minutes`(열차 이동
 
 ### 4.4 세션 슬롯 (`session.py`)
 
-- `SessionContext`: `last_station_id`, `last_station_name`, `last_route`(`start_id`, `end_id`, `arrive_by`, 출발·도착 시각), `last_query_type`(= card_type), `updated_at`.
+- `SessionContext`: `last_station_id`, `last_station_name`, `last_route`(`start_id`, `end_id`, `arrive_by`, 출발·도착 시각), `last_query_type`(= card_type), `updated_at`, `travel`(수집 중인 명시적 현재역·노선·목적지·고장역·다음역·승차여부, 분석 후 삭제).
 - `SessionStore`: 인메모리. 마지막 저장 후 `SESSION_TTL_MINUTES`(30분)가 지나면 버린다. 저장할 때마다 만료 세션을 지우고, `max_sessions`(10,000)를 넘으면 오래된 것부터 버린다. 서버를 재시작하면 사라진다.
 - 최근 역 우선순위: 경로의 도착역 > 상태를 조회한 역 > 대체역을 찾은 역 > `resolve_station`으로 확인된 역. 데이터 소스에 없는 역 ID는 무시한다.
 - 폴백 응답도 `tool_calls` 인자로 같은 규칙을 적용해 갱신한다. 그래서 LLM이 실패한 다음 요청에서도 "거기"가 이어진다.
+- 방향 민감 문의는 LLM 호출 전에 `travel_context.directional_response`로 처리한다. `need_travel_context`에서 여러 턴의 답을 모으고, `directional_alternatives`에서 고장 역 후보와 조건을 분석한다. 모순은 재확인하고 새 주제/취소는 수집을 종료한다. 실제 고장역 상태의 수집 시각을 `metadata.data_updated_at`으로 전달한다. 일반 `/api/chat` 및 LLM 도구 입력 필드는 바꾸지 않았다.
 
 ### 4.5 후처리 검증 (`guard.check_text`)
 

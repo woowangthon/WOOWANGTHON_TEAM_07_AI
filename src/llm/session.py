@@ -21,6 +21,7 @@ class SessionContext(BaseModel):
     last_station_name: Optional[str] = None
     last_route: Optional[dict] = None
     last_query_type: Optional[str] = None
+    travel: Optional[dict] = None  # 명시적으로 입력한 현재 이동 정보만, 기존 TTL 적용
     updated_at: datetime = Field(default_factory=datetime.now)
 
     def as_fallback_ctx(self) -> dict:

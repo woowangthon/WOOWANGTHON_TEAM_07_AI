@@ -25,6 +25,7 @@ from ..tools import parse_hhmm, resolve_station
 from ..tools.elevator import format_limitations
 from ..tools.registry import TOOL_SPECS, execute_tool
 from ..tools.trip import detour_text
+from ..tools.travel_context import directional_response
 from .client import LLMClient, LLMUnavailableError, OpenAICompatClient
 from .guard import check_text
 from .prompts import build_system_prompt
@@ -67,7 +68,7 @@ def _append_missing_alternatives(text: str, supplements: List[ToolResult]) -> st
     for r in supplements:
         for d in r.result.get("detours", [])[:1] if r.ok else []:
             if f"{d['alternative_station_name']}역" not in text:
-                lines.append(f"💡 추천 대체역: {detour_text(d)}")
+                lines.append(f"💡 대체역 후보: {detour_text(d)}")
     return "\n".join([text] + lines) if lines else text
 
 
@@ -168,6 +169,13 @@ class ChatOrchestrator:
         ctx = self.sessions.get(req.session_id)
 
         try:
+            travel_ctx = {"travel": ctx.travel} if ctx.travel is not None else {}
+            directional = directional_response(req.message, req.session_id, travel_ctx)
+            ctx.travel = travel_ctx.get("travel")
+            if directional:
+                self.sessions.save(ctx)
+                directional.metadata.latency_ms = int((time.perf_counter() - started) * 1000)
+                return directional
             resp, results = self._run_llm(req, ctx, now)
         except DataUnavailableError as e:
             # 데이터 소스 장애는 폴백 엔진도 같은 소스를 쓰므로 바로 "확인할 수 없음"으로 답한다.
@@ -276,6 +284,10 @@ class ChatOrchestrator:
             text = _append_missing_alternatives(text, supplements)
             text = _append_missing_warnings(text, built.warnings)
             text = _append_missing_limitations(text, built.limitations)
+        # 역명·시각 가드는 물리적 접근성 주장을 검증하지 못한다. 대체역 후보가 있으면
+        # 생성 문장의 하차·반대편 환승 지시를 사용자에게 노출하지 않고 사실 템플릿을 쓴다.
+        if any(r.ok and r.result.get("detours") for r in results):
+            text = built.safe_text
 
         return self._make_response(req, text, built, results, guard_triggered=not verdict.ok), results
 

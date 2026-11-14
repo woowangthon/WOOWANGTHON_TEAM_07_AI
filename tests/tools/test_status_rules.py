@@ -101,7 +101,8 @@ def test_registered_alternative_with_unknown_status_is_disclosed():
     assert detours[0].alternative_station_id == "bangbae"
     assert detours[0].alternative_status == "UNKNOWN"
     assert detours[0].surface_distance_m is None  # 확인된 거리가 없으면 기본값으로 채우지 않음
-    assert limitations == ["대체역 방배역의 엘리베이터 상태는 확인되지 않음"]
+    assert limitations[0] == "대체역 방배역의 엘리베이터 상태는 확인되지 않음"
+    assert "방향을 고려하지 않은 후보" in limitations[-1]
 
 
 class CalcAltSource(MockDataSource):
@@ -124,6 +125,7 @@ def test_source_calculated_alternatives_are_used_as_is():
         alt_plan = plan_trip("sadang", "sadang")
     assert [d.alternative_station_id for d in detours] == ["yeoksam", "gyodae"]
     assert detours[0].stops_away == 1 and detours[0].bus_tip == ""
-    assert limitations == ["실제 접근 가능한 경로와 환승 가능 여부는 검증되지 않음"]
+    assert limitations[0] == "실제 접근 가능한 경로와 환승 가능 여부는 검증되지 않음"
+    assert "방향을 고려하지 않은 후보" in limitations[-1]
     # 대체역만 묻는 경우(출발=도착)는 후보를 모두 돌려준다
     assert len(alt_plan.detours) == 2

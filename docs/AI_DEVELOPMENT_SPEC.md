@@ -4,6 +4,8 @@
 >
 > 이 문서는 **목표 설계**를 다룬다. 현재 코드가 어디까지 구현되었고 명세와 어떻게 다른지는 [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md)를 참고한다.
 
+> 2026-11-15 안전 계약 보완: 대체역 후보는 방향/접근성이 검증된 경로가 아니다. 현재 AI는 후보 액션을 `openStation {station_id}`로 만들며, 검증되지 않은 `[고장역, 후보역]` 경로를 `showAlternative`로 만들지 않는다. 방향 민감 질의의 `need_travel_context`/`directional_alternatives` 카드와 내부 `SessionContext.travel` 슬롯은 [방면 분석 문서](./directional-alternatives-analysis.md)를 따른다. `/api/chat` 및 네 개 LLM 도구 입력 스키마는 변경하지 않는다. 후보가 포함되면 자유 생성 이동 지시 대신 도구 기반 템플릿을 출력한다.
+
 ---
 
 ## 1. 시스템 개요 및 핵심 원칙
@@ -316,25 +318,24 @@ Content-Type: application/json
 
 ### 4.2 응답 (Response)
 백엔드가 직접 액션 데이터(`actions`, `card_data`)를 조립하고, LLM의 텍스트(`text`)와 결합하여 전달한다.
+아래 값은 응답 구조 설명용 예시이며 실제 역의 고장·접근 가능성을 나타내지 않는다. 후보는 상세 정보만 열고 미검증 우회 경로를 그리지 않는다.
 ```json
 {
   "session_id": "session_abc123",
-  "text": "현재 시청역의 외부 출입구 및 승강장 엘리베이터가 모두 점검 중입니다. 휠체어를 이용하실 경우 인접한 을지로입구역(2호선)을 이용하시는 것을 추천합니다. 을지로입구역 1번 출구 엘리베이터는 정상 작동 중입니다.",
-  "card_type": "alternative_station",
+  "text": "시청역의 대체역 조회 후보는 을지로입구역입니다. 후보의 이동 방면·승강장 연결·계단 없는 동선은 검증되지 않았습니다. 현재 역·노선·목적지·고장 역·다음 정차역과 탑승 여부를 알려주세요.",
+  "card_type": "elevator_status",
   "actions": [
     {
-      "type": "showAlternative",
-      "label": "지도에서 우회 경로 보기",
+      "type": "openStation",
+      "label": "을지로입구역 후보 정보 보기",
       "payload": {
-        "from": "cityhall",
-        "to": "euljiro1ga",
-        "path": ["cityhall", "euljiro1ga"]
+        "station_id": "euljiro1ga"
       }
     },
     {
       "type": "openStation",
-      "label": "을지로입구역 상세 보기",
-      "payload": { "station_id": "euljiro1ga" }
+      "label": "시청역 상세 보기",
+      "payload": { "station_id": "cityhall" }
     }
   ],
   "tool_calls": [

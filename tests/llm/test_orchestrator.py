@@ -29,10 +29,11 @@ def test_tool_loop_builds_actions_from_tool_results():
     assert res.metadata.engine == "llm"
     assert res.metadata.fallback_used is False
     assert res.metadata.guard_triggered is False
-    assert res.text.startswith("사당역 2호선")
+    assert "사당역" in res.text and "2호선 승강장" in res.text
+    assert "방배역을 이용해 주세요" not in res.text  # 접근성 근거 없는 LLM 지시 제거
     assert res.card_type == "elevator_status"
-    assert [a.type for a in res.actions] == ["showAlternative", "openStation"]
-    assert res.actions[0].payload == {"from": "sadang", "to": "bangbae", "path": ["sadang", "bangbae"]}
+    assert [a.type for a in res.actions] == ["openStation", "openStation"]
+    assert res.actions[0].payload == {"station_id": "bangbae"}
     assert [t.name for t in res.tool_calls] == ["resolve_station", "get_elevator_status", "plan_trip"]
     # 도구 결과가 다음 LLM 요청에 tool 메시지로 들어갑니다.
     assert llm.requests[1][-1]["role"] == "tool"
@@ -154,10 +155,10 @@ def test_missing_alternative_is_supplemented_for_broken_station():
     assert res.metadata.guard_triggered is False
     assert [t.name for t in res.tool_calls] == ["get_elevator_status", "plan_trip"]
     assert res.tool_calls[1].args == {"start_id": "sillim", "end_id": "sillim"}
-    assert res.text.startswith("신림역 6번 출구")
-    assert "추천 대체역: 신대방역" in res.text
-    assert res.actions[0].type == "showAlternative"
-    assert res.actions[0].payload["to"] == "sindaebang"
+    assert "신림역" in res.text and "6번 출구" in res.text
+    assert "대체역 후보: 신대방역" in res.text
+    assert res.actions[0].type == "openStation"
+    assert res.actions[0].payload["station_id"] == "sindaebang"
 
 
 def test_supplemented_alternative_is_in_template_when_guard_fails():
