@@ -3,7 +3,7 @@
 > 이 문서는 **현재 코드가 실제로 어떻게 동작하는지**를 정리한다. 목표 설계는 [`AI_DEVELOPMENT_SPEC.md`](./AI_DEVELOPMENT_SPEC.md)에 있다.
 > 코드 동작을 바꾸면 이 문서의 해당 절도 같이 고친다.
 >
-> 최종 갱신: 2026-11-14 · 단위 테스트 217건 통과
+> 최종 갱신: 2026-11-14 · 단위 테스트 292건 통과 (1건 skip)
 
 ---
 
@@ -328,7 +328,7 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 | LLM 타임아웃 | 2.5초 (명세 §1, §6.2) | `config.py` 기본값 3.0초, 호출 1회 기준 — **팀 확정 필요** |
 | 오케스트레이터 비동기 처리 | `async/await` (명세 §9 Phase 2) | 동기 함수 + FastAPI 스레드 풀 |
 | 후처리 검증 대상 | 역명·시각 정규식 (명세 §6.1) | 같음. 추가로 `N시 반`, `N시` 형식과 오전/오후 12시간 차이 허용 (§4.5) |
-| `ChatResponseMetadata` | `engine`, `latency_ms`, `fallback_used`, `data_updated_at` | `fallback_reason`, `guard_triggered` 추가 (명세 §4.2 반영) |
+| `ChatResponseMetadata` | `engine`, `latency_ms`, `fallback_used`, `data_updated_at` | `fallback_reason`, `guard_triggered` 추가, `data_updated_at`은 모르면 `null` (명세 §4.2 반영) |
 | 커버리지 판정 | 역 단위 목록 (설계 검토 §2.2) | `STATIONS` 등록 여부 + 키워드 블랙리스트 |
 | 엘리베이터 이용 가능 판정 | 이동 방향에 필요한 구간 기준 (설계 검토 §2.3) | 확인된 설비 중 불가 개수 기준 (BE 계약 §6.2와 같음). BE에 설비 위치 분류·방향이 없어 구간 판정 불가 |
 | 고장 우회 | 출발·환승·도착, 그래프에서 고장 노드 제외 | 출발·도착만. BE 연동 시 BE 대체역 API(인접 간선 BFS), Mock은 등록된 안내 또는 인접 역 |
@@ -353,6 +353,20 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 ---
 
 ## 7. 변경 이력
+
+### 2026-11-14 — BE 출발 시각 연동 (이슈 #6 일부), 통합 시나리오 (이슈 #12), 데이터 기준 시각 (이슈 #10)
+
+세 작업을 병렬로 만들어(브랜치 `feat/departure-api`, `test/integration-scenarios`, `fix/data-updated-at`) 한 브랜치로 합쳤다.
+
+| 추가·변경 | 내용 |
+|---|---|
+| `src/data/source.py`, `mock_source.py`, `be_source.py` | `departure_estimate()`: Mock은 None(직접 계산), BE는 `POST /api/departure-time`. 분 값은 모두 AI 값을 명시해서 보냄(대기 5분 등) |
+| `src/tools/trip.py`, `src/models.py` (`PlanTripOutput.time_source`) | 역산 모드·경로 있음·출발≠도착이면 BE 결과 시각 사용 (`time_source="BE"`). 지각 판정은 AI 기준 시각. BE limitations 중 엘리베이터 미확인·이미 지났음 문구는 전하지 않음 (§2.4) |
+| `src/models.py` (`ChatResponseMetadata.data_updated_at`), `src/llm/orchestrator.py`, `response_builder.py`, `src/fallback/engine.py` | `data_updated_at`은 데이터 수집 시각, 모르면 `null` (예전에는 응답 생성 시각). 폴백 경로도 도구의 `updated_at`을 씀 (§4.2) |
+| `src/fallback/engine.py` | 대체역 후보가 여럿이면(BE) "다른 후보"도 안내 — LLM 경로 템플릿과 맞춤 (통합 시나리오에서 발견) |
+| `tests/llm/test_scenarios_be.py` | 실제 BE 응답 픽스처 기반 `/api/chat` 시나리오 4종 × 폴백·LLM, BE 장애·범위 밖. 경로 조회는 skip (§4.10) |
+| 실행 확인 | BE 데모 서버로 8개 질문 재확인: 출발 시각이 BE로 계산되고(14:06, 이전과 같음) `data_updated_at`에 BE `fetched_at`이 들어감. LLM 8건 폴백 없음 |
+| 테스트 | 출발 시각 22건, 기준 시각 27건, 시나리오 25건(+skip 1), 병합 확인 1건 추가 (총 292건 통과, 1건 skip) |
 
 ### 2026-11-14 — BE 계약 리뷰 (이슈 #1), 상태 규칙 (이슈 #2), BE API 연동 (이슈 #4, #5), 미확인 안내 (이슈 #10 일부)
 

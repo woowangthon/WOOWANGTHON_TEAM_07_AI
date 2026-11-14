@@ -8,7 +8,7 @@
 우왕톤 7팀 "엘리베이터 지하철" 서비스의 **AI 파트**. 휠체어·유모차 이용자에게 지하철 엘리베이터 상태, 고장 시 대체역, 늦지 않는 출발 시각을 챗봇으로 안내한다.
 LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도구가 한다. LLM이 실패하면 규칙 기반 폴백 엔진이 같은 형식으로 답한다.
 
-현재 단계: Phase 1 완료(도구·폴백·테스트). Phase 2·3의 AI 내부 작업(`/api/chat` 오케스트레이터, 세션, 폴백 전환, 후처리 검증)과 50문항 벤치마크 구현. 응답 속도 옵션(역 사전 확인·템플릿 답변)을 넣어 `gemini-3.5-flash-lite` 조합이 P95 1.5초로 목표 안에 들었으나 기본값(`gpt-5.1`, 옵션 끔)은 팀 결정 대기. BE API 데이터 소스(`AI_DATA_SOURCE=be`)로 역·엘리베이터·대체역을 BE에서 읽고, 상태 판정은 BE 계약 규칙과 같다. BE 경로 API(#37)가 없어 경로·출발 시각은 아직 Mock 2호선 계산(추정 안내).
+현재 단계: Phase 1 완료(도구·폴백·테스트). Phase 2·3의 AI 내부 작업(`/api/chat` 오케스트레이터, 세션, 폴백 전환, 후처리 검증)과 50문항 벤치마크 구현. 응답 속도 옵션(역 사전 확인·템플릿 답변)을 넣어 `gemini-3.5-flash-lite` 조합이 P95 1.5초로 목표 안에 들었으나 기본값(`gpt-5.1`, 옵션 끔)은 팀 결정 대기. BE API 데이터 소스(`AI_DATA_SOURCE=be`)로 역·엘리베이터·대체역을 BE에서 읽고, 상태 판정은 BE 계약 규칙과 같다. 출발 시각 역산은 BE `/api/departure-time`(AI 값 명시)으로 하지만, BE 경로 API(#37)가 없어 경로·열차 이동 시간은 아직 Mock 2호선 계산(추정 안내).
 상세 현황: [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md)
 
 ## 2. 읽는 순서
@@ -38,7 +38,7 @@ LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도�
 
 ```powershell
 pip install -r requirements.txt          # pydantic, openai, fastapi, uvicorn, httpx, pytest
-python -m pytest                         # 전체 테스트 (217건). 작업 전후로 반드시 실행
+python -m pytest                         # 전체 테스트 (292건, 1건 건너뜀). 작업 전후로 반드시 실행
 python scripts/run_server.py             # /api/chat 개발 서버 (http://127.0.0.1:8001, 키 없으면 폴백으로 응답)
                                          # BE 데이터로: .env에 AI_DATA_SOURCE=be (BE 서버 먼저 실행, BE/docs/demo-handoff.md)
 python scripts/llm_demo.py "사당역 엘리베이터 돼?"              # FactChat 게이트웨이 왕복 데모 (API 키 필요)
@@ -73,7 +73,7 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 | 외부 데이터 원본 추가·교체 | `data/raw/`, `data/sources.json` | `docs/DATA_SPEC.md`, `scripts/check_raw_data.py`로 검증 |
 | 실험용 실행 스크립트 | `scripts/` | — |
 
-다음에 만들 것: `plan_trip`을 BE 경로·출발 시각 API로 교체(이슈 #6). BE 경로 API(#37)와 대기 시간 기본값 결정 뒤 진행한다. 오케스트레이터 테스트는 실제 LLM 대신 `tests/llm/fake_llm.py`의 `FakeLLM`을 쓴다.
+다음에 만들 것: `plan_trip`의 경로를 BE 경로 API로 교체(이슈 #6 남은 부분)와 통합 시나리오의 경로 조회(이슈 #12, 지금은 skip). BE 경로 API(#37)가 나온 뒤 진행한다. 오케스트레이터 테스트는 실제 LLM 대신 `tests/llm/fake_llm.py`의 `FakeLLM`을 쓴다.
 
 ## 6. 작업 규칙
 
