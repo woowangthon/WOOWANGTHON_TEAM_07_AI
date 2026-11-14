@@ -429,6 +429,9 @@ class FallbackEngine:
             if plan.detours:
                 d = plan.detours[0]
                 text += f"\n💡 **추천 대체역**: {detour_text(d.model_dump())}"
+                others = ", ".join(detour_text(x.model_dump()) for x in plan.detours[1:3])
+                if others:  # 데이터 소스가 후보를 여럿 주면(BE) LLM 경로 템플릿처럼 함께 안내
+                    text += f"\n다른 후보: {others}"
                 actions.insert(0, ActionPayload(
                     type="showAlternative", label="지도에서 우회 경로 보기",
                     payload={"from": sid, "to": d.alternative_station_id, "path": [sid, d.alternative_station_id]},

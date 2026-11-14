@@ -300,6 +300,8 @@ def test_s2_alternative_follow_up_fallback(be):
     assert_fallback(res)
     assert res.card_type == "elevator_status"
     assert "강남역" in res.text and "역삼역" in res.text  # BE 추천 1순위
+    # 나머지 BE 후보도 BE 순서대로 안내 (LLM 경로 템플릿과 같음)
+    assert res.text.index("역삼역") < res.text.index("교대역") < res.text.index("남부터미널역")
     assert res.actions[0].type == "showAlternative"
     assert res.actions[0].payload == {"from": GANGNAM, "to": YEOKSAM, "path": [GANGNAM, YEOKSAM]}
     assert f"※ {ALT_LIMITATION}" in res.text
@@ -386,6 +388,28 @@ def test_s3_departure_time_llm(be):
     plan = json.loads(llm.requests[2][-1]["content"])
     assert (plan["departure_time"], plan["board_time"], plan["arrival_time"]) == ("14:06", "14:21", "15:00")
     assert plan["estimated"] is True and plan["limitations"]
+    # 병합 후 확인: 역산은 BE /api/departure-time이 했고, BE 서버 시계 기준 문구는 전하지 않는다 (#6)
+    assert plan["time_source"] == "BE"
+    assert "추천 출발 시각이 현재 시각보다 이미 지났음" not in plan["limitations"]
+
+
+def test_merged_departure_goes_through_be_and_metadata_has_fetch_time():
+    """#6·#10 병합 확인: 출발 시각은 BE POST로 계산되고, 상태 응답의 수집 시각은 BE fetched_at이다."""
+    posts = []
+
+    def recording(request):
+        if request.method == "POST":
+            posts.append(json.loads(request.content))
+        return fake_be(request)
+
+    with use_data_source(be_source(recording)):
+        trip = ask(fallback_orch(), TRIP_QUESTION)
+        status = ask(fallback_orch(), "강남역 엘리베이터 돼?")
+    _assert_trip(trip)
+    assert len(posts) == 1 and posts[0]["buffer_minutes"] == 5 and posts[0]["arrival_at"].endswith("+09:00")
+    assert trip.metadata.data_updated_at is None  # 경로 응답에는 단일 수집 시각이 없다
+    fetched = [e["fetched_at"] for e in FIX["elevators"][GANGNAM]["elevators"] if e["fetched_at"]]
+    assert status.metadata.data_updated_at == max(fetched)
 
 
 def test_s3_departure_time_preresolve_template(be):
