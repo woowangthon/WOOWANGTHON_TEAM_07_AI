@@ -3,7 +3,7 @@
 > 이 문서는 **현재 코드가 실제로 어떻게 동작하는지**를 정리한다. 목표 설계는 [`AI_DEVELOPMENT_SPEC.md`](./AI_DEVELOPMENT_SPEC.md)에 있다.
 > 코드 동작을 바꾸면 이 문서의 해당 절도 같이 고친다.
 >
-> 최종 갱신: 2026-11-13 · 단위 테스트 182건 통과
+> 최종 갱신: 2026-11-14 · 단위 테스트 217건 통과
 
 ---
 
@@ -12,21 +12,22 @@
 | 구성 요소 | 명세 | 상태 | 파일 |
 |---|---|---|---|
 | 도구 4종 입출력 스키마 | §3 | ✅ | `src/models.py` |
-| 도구 4종 로직 | §3 | ✅ Mock 데이터 기반 | `src/tools/station.py`, `elevator.py`, `trip.py`, `src/data/mock_data.py` |
+| 도구 4종 로직 | §3 | ✅ Mock·BE 데이터 소스. 상태 판정은 BE 계약 §6 규칙 | `src/tools/station.py`, `elevator.py`, `trip.py`, `src/data/mock_data.py` |
 | LLM용 도구 정의 + 실행기 | §3 | ✅ | `src/tools/registry.py` |
 | 시스템 프롬프트 | §5.1 | ✅ 템플릿 | `src/llm/prompts.py` |
 | 규칙 기반 폴백 엔진 | §6.2 | ✅ | `src/fallback/engine.py` |
 | 환경 설정 (`.env` 자동 로딩) | — | ✅ | `src/config.py` |
 | LLM 게이트웨이 왕복 데모 | §9 Phase 2 | ✅ 실험용 | `scripts/llm_demo.py` |
 | `/api/chat` 요청/응답 모델 | §4 | ✅ | `src/models.py` |
-| 데이터 소스 인터페이스 (Mock/BE 교체) | — | ✅ Mock 구현만 | `src/data/source.py`, `mock_source.py` |
+| 데이터 소스 인터페이스 (Mock/BE 교체) | — | ✅ Mock, BE API(`AI_DATA_SOURCE=be`). BE 데모 서버로 실제 연동 확인 (§4.8) | `src/data/source.py`, `mock_source.py`, `be_source.py` |
 | FastAPI `/api/chat` 엔드포인트 (오케스트레이터) | §4 | ✅ FactChat `gpt-5.1`로 50문항 왕복 확인. 기본 설정은 **응답 시간이 목표 초과**, `gemini-3.5-flash-lite` + 응답 속도 옵션(§4.6)은 목표 안 ([BENCHMARK](./BENCHMARK.md) §4) | `src/api/app.py`, `src/llm/orchestrator.py`, `client.py` |
 | 액션·카드 조립 (도구 결과 기반) | §4 | ✅ | `src/llm/response_builder.py` |
 | 세션 슬롯 메모리 (TTL 30분) | §5.2 | ✅ 인메모리 | `src/llm/session.py` |
 | LLM 장애 → 폴백 전환 | §6.2 | ✅ | `src/llm/orchestrator.py` |
 | 후처리 환각 검증기 (Guard) | §6.1 | ✅ 역명·시각만 | `src/llm/guard.py` |
 | 50문항 벤치마크 | §8 | ✅ 폴백·`gpt-5.1` 측정, 프롬프트 1차 튜닝 ([BENCHMARK](./BENCHMARK.md)) | `src/eval/`, `scripts/run_benchmark.py` |
-| 백엔드 실데이터·그래프 연동 | §7 | ⏳ 원본 4종 분석 완료, 4종(경로·시간표·빠른하차 등) BE 수집 예정, 연동 전 ([DATA_SPEC](./DATA_SPEC.md)) | `data/` |
+| 백엔드 실데이터 연동 | §7 | 🔸 역·엘리베이터·대체역은 BE API 연동. 경로(BE #37)·시간표 없음 → 경로·소요 시간은 Mock 2호선 계산(추정 안내) ([DATA_SPEC](./DATA_SPEC.md) §9) | `src/data/be_source.py` |
+| 데이터 미확인·BE 장애 안내 | — | ✅ `limitations` 전달·강제, BE 장애 시 "확인할 수 없음" (§4.9) | `src/tools/elevator.py`, `src/llm/orchestrator.py` |
 
 ---
 
@@ -34,7 +35,7 @@
 
 LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행한다. 인자를 `*Input` 모델로 검증하고, 실패하거나 도구가 `ValueError`를 내면 예외 대신 `{"error": "..."}`를 돌려준다. `now`는 `plan_trip`에만 전달되며 오케스트레이터가 요청의 `current_time`으로 채운다.
 
-도구와 폴백 엔진은 `mock_data.py`를 직접 읽지 않고 데이터 소스 인터페이스(`data.get_data_source()`)를 거친다 (§4.8). 아래 동작은 기본 데이터 소스인 `MockDataSource` 기준이다.
+도구와 폴백 엔진은 `mock_data.py`를 직접 읽지 않고 데이터 소스 인터페이스(`data.get_data_source()`)를 거친다 (§4.8). 아래 동작은 기본 데이터 소스인 `MockDataSource` 기준이며, BE 데이터 소스와 다른 점은 §4.8에 적는다. 데이터 소스(BE)에 연결할 수 없으면 도구는 `DataUnavailableError`를 내고, 실행기는 `{"error", "data_unavailable": true}`를 돌려준다 (§4.9).
 
 ### 2.1 `resolve_station(query)`
 
@@ -52,15 +53,27 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 
 ### 2.2 `get_elevator_status(station_id)`
 
-- `overall_status`는 고장 구간 **개수**로 정한다: 0개 → `AVAILABLE`, 전부 → `UNAVAILABLE`, 그 외 → `PARTIAL`. `MAINTENANCE`도 고장으로 센다.
-- 엘리베이터 데이터가 있는 역은 9곳(`ELEVATORS`). 나머지 지원 역은 오류 없이 `UNKNOWN`. 지원 역 목록에 없는 ID는 `ValueError`(실행기에서는 `{"error"}`) — 범위 밖 역("판교")을 지원 역처럼 "정보 없음"으로 안내하지 않기 위해서다.
-- `updated_at`은 "현재 − 5분", `freshness_minutes`는 5로 고정된 Mock 값이다.
-- 현재 Mock 상 고장 역: 사당(2호선 승강장), 신림(6번 출구), 신도림(3번 출구) — 모두 `PARTIAL`.
+상태 판정은 BE 계약(`BE/docs/api-contract.md` §6.2)과 같다 (`tools/elevator.judge`). T = 엘리베이터 수, U = 상태 미확인(`UNKNOWN`) 수.
+
+| 상황 | `overall_status` | `data_fresh` | `limitations` |
+|---|---|---|---|
+| 전부 확인, 전부 가동 / 섞임 / 전부 불가 | `AVAILABLE` / `PARTIAL` / `UNAVAILABLE` | true | 없음 |
+| 일부 미확인 (0 < U < T) | 확인된 설비로 위와 같이 판정 | false | "일부 설비 상태가 확인되지 않아 역 전체 상태를 단정할 수 없음" |
+| 전부 미확인 (U = T > 0) | `UNKNOWN` | false | "확인 가능한 엘리베이터 상태가 없어 역 상태를 판정할 수 없음" |
+| 엘리베이터 정보 없음 (T = 0) | `UNKNOWN` | false | "엘리베이터 정보가 없어 역 상태를 판정할 수 없음" |
+
+- 미확인 설비를 정상으로 채우지 않는다. 설비 상태는 `AVAILABLE` / `UNAVAILABLE` / `UNKNOWN`(+ `unknown_reason` `NO_DATA`/`STALE`). 예전의 `MAINTENANCE`는 없앴다(BE는 보수중을 `가동 안됨`으로 본다).
+- 역 자체의 한계 안내(BE: 1호선 역의 "1호선은 일부 구간의 역만 포함되어 있어 …")도 `limitations`에 붙인다.
+- `updated_at`은 설비 `fetched_at` 중 가장 최근 값. 설비에 수집 시각이 없으면(Mock) "현재 − 5분", 엘리베이터가 없으면 `None`.
+- 엘리베이터 데이터가 있는 Mock 역은 9곳(`ELEVATORS`). 나머지 지원 역은 `UNKNOWN`(엘리베이터 정보 없음). 지원 역 목록에 없는 ID는 `ValueError` — 범위 밖 역("판교")을 지원 역처럼 안내하지 않기 위해서다.
+- 현재 Mock 상 고장 역: 사당(2호선 승강장), 신림(6번 출구), 신도림(3번 출구) — 모두 `PARTIAL`, 전부 확인됨.
+- 안내 문장은 `describe_status`(응답 빌더·폴백 공용). `data_fresh=false`면 "○대 중 상태가 확인된 ○대는 가동 중 … 단정할 수 없습니다"처럼 확인된 범위만 말한다. `UNKNOWN`이면 "상태를 확인할 수 없습니다. 이용 가능하다고 판단하지 마시고 …".
 
 ### 2.3 `get_broken_elevators(line_id=None)`
 
-- 고장 구간이 있는 역만 모은다. `line_id`가 있으면 그 노선이 지나는 역만.
-- 정렬: `UNAVAILABLE` 먼저, 그다음 고장 구간 수 내림차순. `details`는 고장 구간 원본 dict 목록.
+- 이용 불가가 **확인된** 설비가 있는 역만 모은다(§2.2 판정이 `PARTIAL`/`UNAVAILABLE`). 미확인 설비는 고장으로 세지 않는다. `line_id`가 있으면 그 노선이 지나는 역만.
+- 미확인 설비가 하나라도 있으면 `limitations`에 "일부 설비의 상태 정보가 없거나 오래되어 현재 상태를 확인하지 못함"(목록이 전부가 아닐 수 있음).
+- 정렬: `UNAVAILABLE` 먼저, 그다음 불가 설비 수 내림차순. `details`는 불가 설비 목록, `unknown_count`는 역별 미확인 수.
 
 ### 2.4 `plan_trip(start_id, end_id, arrive_by=None, depart_at=None, home_walk_min=7, *, now=None)`
 
@@ -89,10 +102,12 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 
 **엘리베이터 우회**
 
-- 출발역과 도착역(같은 역이면 한 번)의 상태가 `PARTIAL`/`UNAVAILABLE`이면 `find_alternative`로 대체역을 찾아 `detours`(`target_type` = `start`/`end`)와 `warnings`에 넣는다.
-  1. `ALTERNATIVES`에 등록된 안내가 있으면 사용 (거리·도보 시간 포함, 없으면 기본 800m / 10분).
-  2. 없으면 순환선 양옆 역 중 고장이 확인되지 않은 역 (기본 800m / 10분).
-  3. 대체역 자체가 고장으로 확인되면 추천하지 않는다.
+- 출발역과 도착역(같은 역이면 한 번)의 상태가 `PARTIAL`/`UNAVAILABLE`이면 `find_alternatives`로 대체역을 찾아 `detours`(`target_type` = `start`/`end`)와 `warnings`에 넣는다. 출발=도착이면 후보를 모두, 경로면 첫 후보만 넣는다.
+  - 데이터 소스가 대체역을 계산하면(BE `/alternatives`) 그 결과와 `limitations`를 그대로 쓴다.
+  - Mock: (1) `ALTERNATIVES`에 등록된 안내. 대체역이 고장으로 확인되면 제외하고, 상태가 미확인이면 `limitations`에 "대체역 ○○역의 엘리베이터 상태는 확인되지 않음". (2) 없으면 순환선 양옆 역 중 가동이 **확인된** 역(`AVAILABLE`/`PARTIAL`).
+  - 거리·도보 시간은 확인된 값만 넣는다(없으면 `None`). 예전의 기본값 800m / 10분은 없앴다.
+- 상태가 `UNKNOWN`인 역에는 대체역을 붙이지 않고 `limitations`에 "○○역 엘리베이터 상태를 확인하지 못함"을 넣는다. 일부만 확인된 역은 "○○역: 일부 설비 상태가 …".
+- 경로를 계산했으면 `estimated=true`, `limitations` 첫 줄에 "열차 시간표와 실제 경로 탐색을 쓰지 않은 추정 계산이며 탑승 가능한 열차는 확인되지 않음".
 - 환승역은 검사하지 않는다. 대체역을 찾아도 경로·시간은 다시 계산하지 않는다.
 - **고장 역의 대체역만 알고 싶으면 `start_id == end_id`로 호출한다** (폴백 엔진과 LLM 도구 설명 모두 이 방식).
 
@@ -151,11 +166,14 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 | `need_station` | 필요한 역을 알 수 없음, 사전에 없는 역, 출발=도착 | — | — |
 | `trip_plan` | departure/route | `resolve_station`, `plan_trip` | `openTime`, 대체역마다 `showAlternative` |
 | `trip_unsupported` | `plan_trip`이 `is_possible=False` | 〃 | — |
+| `data_unavailable` | 데이터 소스(BE) 장애 (오케스트레이터가 만듦, §4.9) | — | — |
 | `elevator_status` | elevator/alternative | `resolve_station`, `get_elevator_status`, 고장이면 `plan_trip(sid, sid)` | 대체역 있으면 `showAlternative`, `openStation` |
 
 - departure/route의 출발·도착: 역 2개 → 앞이 출발. 역 1개 → 도착역, 출발은 `last_station_id` 또는 신도림(이 경우 "출발역이 지정되지 않아 신도림역 기준으로 안내합니다" 문구 포함).
   - 단, 역 1개와 함께 지칭어가 도착지로 쓰이면("신촌에서 **그 역까지**", "거기로") 말한 역이 출발, `last_station_id`가 도착이다.
 - `tool_calls`에는 실제로 호출한 도구와 인자를 그대로 기록한다.
+- 도구 결과의 `limitations`는 문장 끝에 "※ …" 줄로 붙인다 (응답 빌더와 같음). 기본 출발역은 역 이름("신도림")으로 두고 `resolve_station`으로 ID를 찾는다.
+- 데이터 소스 장애면 `DataUnavailableError`를 그대로 올린다. 오케스트레이터가 `data_unavailable`로 답한다.
 - `metadata.latency_ms`는 0 (측정은 오케스트레이터 몫).
 
 ---
@@ -169,6 +187,7 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 3. 도구 호출 없이 문장이 오면 끝. `card_type`·`actions`·`suggestions`는 도구 결과로 코드가 만든다 (§4.2).
    - **대체역 보충**: 엘리베이터 이용 불가 구간이 있는 역(`PARTIAL`/`UNAVAILABLE`)을 조회했는데 LLM이 그 역의 대체역(`plan_trip(sid, sid)`)을 부르지 않았으면, 코드가 직접 조회해 `tool_calls`에 추가한다. 경로 질문(`plan_trip`, 출발≠도착)이 있으면 그 결과에 대체역이 이미 있으므로 보충하지 않는다.
    - 보충한 대체역이 LLM 문장에 없으면 "💡 추천 대체역: ○○역 (안내 문구)" 한 줄을 도구 결과로 덧붙인다.
+   - **limitations 강제**: 도구 결과의 `limitations` 문장이 LLM 문장에 그대로 없으면 "※ …" 줄로 덧붙인다 (BE 계약 R9. LLM이 "확인되지 않음"을 빼고 요약하지 못하게).
 4. 후처리 검증(§4.5)에 걸리면 LLM 문장을 버리고 도구 결과로 만든 템플릿 문장을 쓴다. 검증 근거는 LLM이 실제로 본 도구 결과뿐이며, 보충 조회 결과는 템플릿에만 쓴다.
 5. 세션 슬롯을 갱신하고(§4.4) `metadata.latency_ms`를 기록한다.
 
@@ -179,7 +198,7 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 
 ### 4.2 카드·액션 조립 (`response_builder.build_response`)
 
-도구 결과에서 아래 순서로 처음 해당하는 것을 고른다. `card_type` 이름은 폴백 엔진(§3.4)과 같다. 오류 결과(`{"error"}`)는 건너뛴다.
+도구 결과에서 아래 순서로 처음 해당하는 것을 고른다. `card_type` 이름은 폴백 엔진(§3.4)과 같다. 오류 결과(`{"error"}`)는 건너뛴다. 단, 데이터 소스 장애 결과(`data_unavailable`)가 하나라도 있으면 다른 결과와 상관없이 `data_unavailable`이다(§4.9). 템플릿 문장 끝에는 결과의 `limitations`를 "※ …" 줄로 붙인다.
 
 | 순서 | 근거 | card_type | 액션 |
 |---|---|---|---|
@@ -208,6 +227,7 @@ LLM은 `tools.registry.execute_tool(name, args, now=None)`로 도구를 실행�
 | `max_rounds` | 도구 왕복이 `LLM_MAX_TOOL_ROUNDS`를 넘음 |
 | `guard_rejected` | 문장이 후처리 검증(§4.5)에 걸렸는데 도구 결과로 만들 템플릿이 도움말뿐임 (도구를 안 불렀거나 `resolve_station`만 부름) |
 | `internal_error` | 도구 실행·응답 조립 중 예기치 못한 예외 |
+| `data_unavailable` | 데이터 소스(BE) 장애. 폴백 엔진도 같은 소스를 쓰므로 폴백하지 않고 바로 "확인할 수 없음"으로 답한다 (§4.9) |
 
 - 타임아웃은 **호출 1회 기준**이다. 도구 왕복이 여러 번이면 전체 응답 시간은 그보다 길어질 수 있다.
 
@@ -248,9 +268,31 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 
 ### 4.8 데이터 소스 (`data/source.py`)
 
-- `DataSource` 인터페이스: 역 목록·역 하나·별칭·미지원 키워드, 역별 엘리베이터·전체 엘리베이터·기준 시각, 등록된 대체역·인접 역·경로, 시간 상수·대체역 기본 거리.
-- 구현 선택: 환경 변수 `AI_DATA_SOURCE` (현재 `mock`만 지원). 테스트는 `use_data_source(가짜)`로 바꿔 끼운다.
-- 상태 판정(`PARTIAL` 등), 출발 시각 역산, 안내 문장은 도구에 남아 있다. BE API 연동(이슈 #4~#6) 때 BE 구현을 추가하고, 경로·대체역은 BE 계산 결과를 받도록 바꾼다.
+- `DataSource` 인터페이스: 역 목록·역 하나·별칭·미지원 키워드, 역별 엘리베이터·전체 엘리베이터·기준 시각, 계산된 대체역 후보(`alternative_candidates`)·등록된 대체역·인접 역·경로, 시간 상수.
+- 구현 선택: 환경 변수 `AI_DATA_SOURCE` = `mock`(기본) / `be`. 테스트는 `use_data_source(가짜)`로 바꿔 끼운다.
+- 상태 판정, 출발 시각 역산, 안내 문장은 도구에 남아 있다.
+
+**BE 데이터 소스 (`be_source.BeDataSource`, 이슈 #4·#5)** — 설정 `BE_API_BASE_URL`(기본 `http://127.0.0.1:8000`), `BE_API_TIMEOUT_SECONDS`(기본 2.0)
+
+| 기능 | BE API | 변환 |
+|---|---|---|
+| 역 목록·역 | `GET /api/stations/{id}`를 ID 1부터 차례로 (404가 20번 연속되면 끝) | BE에 목록 API가 없어(검색어 `q` 필수) 처음 필요할 때 읽고 프로세스 동안 캐시. 데모 DB 240역 0.7초. 역 ID는 BE 정수를 문자열로(`"31"`). 역명은 괄호 부제와 끝의 `역`을 뗌(`잠실(송파구청)` → `잠실`, `서울역` → `서울`), 원래 이름은 `display_name`. 역 `limitations`(1호선 안내) 보관 |
+| 별칭·미지원 키워드 | — | AI 사전(`mock_data.ALIASES` 등)을 역 이름으로 BE ID에 연결 |
+| 역별 엘리베이터 | `GET /api/stations/{id}/elevators` | `가동중`→`AVAILABLE`, `가동 안됨`→`UNAVAILABLE`, `null`→`UNKNOWN`(+`unknown_reason`). `type=None`(BE에 분류 없음), 위치는 `location_description` 원문, 층은 `operation_section`. 합성 설비(`[DEMO/SYNTHETIC]`)는 위치를 "시연용 합성 설비(실제 상태 아님)"로 표시 |
+| 전체 엘리베이터 | `GET /api/elevators/status` | 역별로 묶음. 노선 필터는 캐시한 역 목록의 노선으로 (추가 호출 없음) |
+| 대체역 | `GET /api/stations/{id}/alternatives` | BE 추천 순 그대로. `distance`→`stops_away`, `same_line`, 후보 역 상태. 도보 거리·시간 없음 |
+| 경로·시간 | (BE #37 없음) | Mock 2호선 순환선 계산을 역 이름으로 연결. 추정으로 안내 |
+
+- 실패 처리: 연결 실패·타임아웃·200/404 외 응답·JSON 해석 실패 → `DataUnavailableError`. 404는 "없음"(`None`).
+- 실행 확인 (2026-11-14): BE `main` 342a9d0 데모 DB 서버에 붙여 8개 질문을 폴백과 `gemini-3.5-flash-lite`(두 옵션 켬)로 확인했다. LLM은 8건 모두 폴백 없이 응답했고, 첫 요청 3.5초(역 목록 읽기 포함), 이후 1.0~1.2초였다. `scripts/run_server.py`는 `AI_DATA_SOURCE=be`면 시작할 때 역 목록을 미리 읽는다.
+- 테스트는 데모 서버의 실제 응답을 자른 픽스처(`tests/data/fixtures/be_demo_responses.json`)와 `httpx.MockTransport`로 한다.
+
+### 4.9 데이터 미확인·장애 안내 (이슈 #10)
+
+- 도구 결과의 `limitations`는 템플릿·폴백 문장 끝에 "※ …" 줄로 붙이고, LLM 문장에도 없으면 덧붙인다 (§4.1).
+- 프롬프트 수칙 11: `UNKNOWN`이거나 `data_fresh=false`면 "정상", "이용 가능"이라고 단정하지 않고, `limitations`는 빼거나 바꾸지 않는다.
+- 데이터 소스(BE) 장애: 도구 실행기가 `data_unavailable` 표시를 붙이고, 오케스트레이터는 LLM 문장이 있어도 버리고 "지금은 역·엘리베이터 정보를 확인할 수 없습니다. 이전 정보나 추정값으로 안내하지 않으니 …"로 답한다 (`card_type="data_unavailable"`, `fallback_reason="data_unavailable"`). 역 사전 확인이나 폴백 엔진에서 나도 같다.
+- 남은 것: `metadata.data_updated_at`은 고른 결과의 `updated_at`(BE `fetched_at`)이지만, 없으면 아직 응답 생성 시각이다. "실시간" 표현은 팀 결정 대기.
 
 ---
 
@@ -263,19 +305,22 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 | 후처리 검증 대상 | 역명·시각 정규식 (명세 §6.1) | 같음. 추가로 `N시 반`, `N시` 형식과 오전/오후 12시간 차이 허용 (§4.5) |
 | `ChatResponseMetadata` | `engine`, `latency_ms`, `fallback_used`, `data_updated_at` | `fallback_reason`, `guard_triggered` 추가 (명세 §4.2 반영) |
 | 커버리지 판정 | 역 단위 목록 (설계 검토 §2.2) | `STATIONS` 등록 여부 + 키워드 블랙리스트 |
-| 엘리베이터 이용 가능 판정 | 이동 방향에 필요한 구간 기준 (설계 검토 §2.3) | 고장 구간 개수 기준 |
-| 고장 우회 | 출발·환승·도착, 그래프에서 고장 노드 제외 | 출발·도착만, 등록된 안내 또는 인접 역 |
-| 경로 탐색 | 다익스트라, 환승 포함 | 2호선 순환선 방향 비교만 |
+| 엘리베이터 이용 가능 판정 | 이동 방향에 필요한 구간 기준 (설계 검토 §2.3) | 확인된 설비 중 불가 개수 기준 (BE 계약 §6.2와 같음). BE에 설비 위치 분류·방향이 없어 구간 판정 불가 |
+| 고장 우회 | 출발·환승·도착, 그래프에서 고장 노드 제외 | 출발·도착만. BE 연동 시 BE 대체역 API(인접 간선 BFS), Mock은 등록된 안내 또는 인접 역 |
+| 경로 탐색 | 다익스트라, 환승 포함 | 2호선 순환선 방향 비교만 (BE 경로 API #37 미구현, BE 연동 시에도 같음) |
 | 오전/오후 모호성 | 현재 시각 이후 가장 가까운 시각 (설계 검토 §2.1) | 1~6시는 오후 고정, 지난 시각은 다음 날 |
 | 첫차/막차 | 범위 밖이면 예외 응답 (설계 검토 §2.4) | 미반영 |
-| 데이터 신선도 | 실제 갱신 시각 | 현재 − 5분 고정값 |
+| 데이터 신선도 | 실제 갱신 시각 | BE 연동 시 설비 `fetched_at`과 BE의 `data_fresh` 판정(TTL 120분, 임시). Mock은 현재 − 5분 고정값 |
+| 출발 시각 대기 시간 | 배차 간격 + 안전 여유 | AI 5분(2호선 배차 3 + 여유 2). BE `/api/departure-time`은 `buffer_minutes` 기본 0분 — 통일 여부 팀 결정 대기 (BE #14 코멘트) |
 
 ---
 
 ## 6. 남은 제약 (Mock 단계라 의도적으로 둔 것)
 
 - 경로는 2호선 순환선만. 순환선 밖 역은 `is_possible=False`로 정직하게 거절한다.
-- 대체역 거리 정보가 없는 곳(방배, 신대방, 인접 역 자동 선택)은 기본값 800m / 10분.
+- 대체역 거리 정보가 없는 곳(방배, 신대방, 인접 역 자동 선택, BE 대체역 전부)은 거리·도보 시간을 안내하지 않는다.
+- BE 데이터 소스의 역 목록은 프로세스 동안 캐시한다. BE 역 시드가 바뀌면 AI 서버를 다시 시작해야 한다.
+- BE 데모 DB는 엘리베이터 상태가 대부분 `STALE`이라, 시연 답변의 대부분은 "확인할 수 없음"이다 (BE `docs/demo-handoff.md`).
 - 폴백의 역 추출은 띄어쓰기가 없는 문장("신도림에서강남역")에서 앞 역을 놓칠 수 있다. LLM 경로는 `resolve_station`이 역 이름만 받으므로 영향 없음.
 - 세션은 서버 프로세스 메모리에만 있다. 서버를 여러 대 띄우거나 재시작하면 이어지지 않는다.
 - 기본 설정(`gpt-5.1`, 응답 속도 옵션 끔)은 한 질문에 P50 약 5.5초가 걸려, 호출당 3초 타임아웃에서 32~44%가 폴백으로 넘어간다 ([BENCHMARK](./BENCHMARK.md) §4). 목표 안에 든 조합(§4.6)으로 바꿀지, 모델·타임아웃은 팀 결정 사항이다.
@@ -283,6 +328,23 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 ---
 
 ## 7. 변경 이력
+
+### 2026-11-14 — BE 계약 리뷰 (이슈 #1), 상태 규칙 (이슈 #2), BE API 연동 (이슈 #4, #5), 미확인 안내 (이슈 #10 일부)
+
+| 추가·변경 | 내용 |
+|---|---|
+| BE #14 코멘트 | R9·R10 답변, `buffer_minutes` 0분 의견, 역명·검색·위치 분류 차이, 노선 필터 요청, Windows 실행 문제(tzdata, alembic.ini 인코딩) |
+| `docs/DATA_SPEC.md` §8·§9 | BE API 호출·계산은 BE로 확정, BE 응답과 AI 도구의 대응 |
+| `src/models.py`, 명세 §3 | 설비 `MAINTENANCE` 삭제·`UNKNOWN` 추가(`unknown_reason`, `fetched_at`), `type` 선택. 역 상태에 `data_fresh`, `total_count`, `unknown_count`, `limitations`. 고장 목록 `limitations`·`unknown_count`. 대체역 거리 선택·`stops_away`·`same_line`·`alternative_status`. `plan_trip`에 `estimated`, `limitations` |
+| `src/tools/elevator.py` | BE 규칙 판정(`judge`), 공용 안내 문장(`describe_status`), 표준 limitations 문구 |
+| `src/tools/trip.py` | `find_alternatives`(데이터 소스 계산 결과 우선, 기본 거리값 제거, 미확인 대체역 안내), 미확인 역에는 대체역 미부착, 추정 계산 안내 |
+| `src/data/be_source.py`, `config.py`, `.env.example` | BE API 데이터 소스 (`AI_DATA_SOURCE=be`, `BE_API_BASE_URL`, `BE_API_TIMEOUT_SECONDS`) |
+| `src/data/source.py`, `tools/registry.py`, `llm/orchestrator.py`, `llm/response_builder.py` | `DataUnavailableError` → `data_unavailable` 응답. LLM 문장에 limitations 강제 |
+| `src/llm/prompts.py`, 명세 §5.1 | 수칙 11(미확인 상태 단정 금지, limitations 전달), 기본 출발역을 세션 컨텍스트로 (Mock ID `sindorim` 고정 제거) |
+| `src/fallback/engine.py` | 공용 안내 문장 사용, "실시간"·"모든 역 정상" 표현 제거, 기본 출발역을 이름으로 |
+| `scripts/run_server.py` | BE 데이터 소스면 시작할 때 역 목록을 미리 읽음 |
+| 벤치마크 (Mock) | 폴백 50/50. `gemini-3.5-flash-lite` 3초: 사전 확인+템플릿 50/50 P95 1.83초, 사전 확인+LLM 답변 49/50 |
+| 테스트 | 상태 규칙 15건, BE 데이터 소스 15건, 장애·limitations 5건 추가, 기존 2건 수정 (총 217건) |
 
 ### 2026-11-13 — 폴백 오류 수정 (이슈 #18), 응답 속도 옵션 (이슈 #17), CORS (이슈 #14 일부)
 

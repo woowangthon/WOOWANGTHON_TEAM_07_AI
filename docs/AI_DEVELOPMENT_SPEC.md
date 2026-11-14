@@ -124,7 +124,7 @@ sequenceDiagram
     "properties": {
       "station_id": {
         "type": "string",
-        "description": "resolve_station으로 획득한 고유 역 ID (예: 'gangnam', 'cityhall')"
+        "description": "resolve_station으로 획득한 고유 역 ID (Mock 예: 'gangnam', BE 연동 예: '31')"
       }
     },
     "required": ["station_id"]
@@ -135,24 +135,34 @@ sequenceDiagram
   {
     "station_id": str,
     "station_name": str,
-    "overall_status": "AVAILABLE" | "PARTIAL" | "UNAVAILABLE" | "UNKNOWN",
-    "updated_at": str,          # ISO-8601 시각 (예: "2026-11-11T18:55:00+09:00")
-    "freshness_minutes": int,   # "○분 전 기준" 표기용
-    "segments": [               # 구간 단위 세부 상태
+    "overall_status": "AVAILABLE" | "PARTIAL" | "UNAVAILABLE" | "UNKNOWN",  # 확인된 설비만으로 판정
+    "data_fresh": bool,         # 모든 설비가 유효 시간 안에 확인됐는지. false면 "정상 운행"이라고 단정하지 않음
+    "total_count": int,         # 엘리베이터 수
+    "unknown_count": int,       # 상태를 확인하지 못한 수
+    "updated_at": Optional[str],        # 가장 최근 수집 시각 ISO-8601 (예: "2026-11-13T09:00:00+09:00")
+    "freshness_minutes": Optional[int], # "○분 전 기준" 표기용
+    "limitations": list[str],   # 사용자에게 그대로 전할 한계 안내 (BE 표준 문구)
+    "segments": [               # 설비 단위 세부 상태
       {
-        "segment_id": str,      # 예: "ground_to_concourse", "concourse_to_platform_line2"
-        "type": "exit" | "platform" | "transfer",
-        "location": str,        # 예: "1번 출구 앞"
-        "floors": str,          # 예: "지상 ↔ B1 대합실"
-        "status": "AVAILABLE" | "UNAVAILABLE" | "MAINTENANCE",
-        "reason": str           # 고장/점검 사유
+        "segment_id": str,      # BE elevator_id
+        "type": "exit" | "platform" | "transfer" | None,  # 원본에 분류가 없으면 None (추정하지 않음)
+        "location": str,        # 설치 위치 원문 (예: "1번 출입구", "교대 방면3-4")
+        "floors": str,          # 운행 층 구간 (예: "B1-1F"). 없으면 ""
+        "status": "AVAILABLE" | "UNAVAILABLE" | "UNKNOWN",
+        "unknown_reason": "NO_DATA" | "STALE" | None,
+        "fetched_at": Optional[str],
+        "reason": str           # 고장/점검 사유. 원본에 없으면 ""
       }
     ]
   }
   ```
+- **상태 규칙 (BE 계약 `BE/docs/api-contract.md` §6과 같음)**:
+  - 설비: BE `가동중` → `AVAILABLE`, `가동 안됨`(원본 보수중 포함) → `UNAVAILABLE`, `null` → `UNKNOWN`.
+  - 역: 확인된 설비만으로 판정한다. 확인된 설비가 전부 가동이면 `AVAILABLE`, 섞이면 `PARTIAL`, 전부 불가면 `UNAVAILABLE`. 확인된 설비가 없거나 엘리베이터 정보가 없으면 `UNKNOWN`(BE `null`).
+  - 일부만 확인됐으면 판정은 유지하되 `data_fresh=false`, `limitations`에 "일부 설비 상태가 확인되지 않아 역 전체 상태를 단정할 수 없음".
 
 ### 3.3 `get_broken_elevators` (노선별 / 전체 고장 목록)
-현재 시점에 엘리베이터가 고장(`UNAVAILABLE`) 또는 점검(`MAINTENANCE`) 중인 역 목록을 반환한다.
+이용 불가(`UNAVAILABLE`)로 확인된 엘리베이터가 있는 역 목록을 반환한다. 상태를 확인하지 못한 설비는 고장으로 세지 않고, 그런 설비가 있으면 `limitations`로 알린다.
 
 - **파라미터 (Parameters)**:
   ```json
@@ -171,14 +181,16 @@ sequenceDiagram
   {
     "line_id": Optional[str],
     "count": int,
-    "updated_at": str,
+    "updated_at": Optional[str],
+    "limitations": list[str],     # 미확인 설비가 있으면 "일부 설비의 상태 정보가 없거나 오래되어 현재 상태를 확인하지 못함"
     "outages": [
       {
         "station_id": str,
         "station_name": str,
         "line_ids": list[str],
-        "broken_count": int,
+        "broken_count": int,      # 이용 불가로 확인된 수
         "total_count": int,
+        "unknown_count": int,     # 상태를 확인하지 못한 수
         "status": "PARTIAL" | "UNAVAILABLE",
         "details": list[dict]
       }
@@ -248,9 +260,12 @@ sequenceDiagram
         "broken_station_id": "gangnam",
         "alternative_station_id": "yeoksam",
         "alternative_station_name": "역삼",
-        "surface_distance_m": 800,
-        "surface_walk_minutes": 10,
-        "bus_tip": "테헤란로를 따라 146·341번 버스로 1정거장 이동",
+        "surface_distance_m": 800,      # 확인된 값이 없으면 null (기본값으로 채우지 않음)
+        "surface_walk_minutes": 10,     # 확인된 값이 없으면 null
+        "stops_away": 1,                # BE 대체역 distance (간선 수). 없으면 null
+        "same_line": true,              # 고장 역과 노선 공유 여부. 없으면 null
+        "alternative_status": "AVAILABLE",  # 대체역 엘리베이터 상태 (UNKNOWN이면 limitations로 알림)
+        "bus_tip": "테헤란로를 따라 146·341번 버스로 1정거장 이동",  # 없으면 ""
         "reason": "강남역 외부 출구 엘리베이터 전체 고장"
       }
     ],
@@ -264,9 +279,15 @@ sequenceDiagram
     },
     "warnings": [
       "강남역 출구 엘리베이터가 고장입니다. 인접한 역삼역 3번 출구 엘리베이터를 권장합니다."
+    ],
+    "estimated": true,             # 시간표·실측이 아닌 추정 계산 (현재 항상 true)
+    "limitations": [               # 사용자에게 그대로 전할 한계 안내
+      "열차 시간표와 실제 경로 탐색을 쓰지 않은 추정 계산이며 탑승 가능한 열차는 확인되지 않음"
     ]
   }
   ```
+- 출발역·도착역 상태가 `UNKNOWN`이면 대체역을 붙이지 않고 `limitations`에 "○○역 엘리베이터 상태를 확인하지 못함"을 넣는다. 대체역은 이용 불가가 확인된 경우에만 찾는다.
+- 출발역=도착역(대체역만 묻는 경우)은 대체역 후보를 모두 `detours`에 담는다 (BE 연동 시 BE 추천 순).
 
 ---
 
@@ -334,7 +355,7 @@ Content-Type: application/json
 | `engine` | `llm` 또는 `fallback` |
 | `latency_ms` | 요청 처리 시간 (밀리초) |
 | `fallback_used` | 폴백 엔진으로 답했는지 |
-| `fallback_reason` | 폴백 사유. `timeout`, `rate_limit`, `network`, `server_error`, `api_error`, `not_configured`, `empty_reply`, `max_rounds`, `guard_rejected`, `internal_error`. LLM 응답이면 `null` |
+| `fallback_reason` | 폴백 사유. `timeout`, `rate_limit`, `network`, `server_error`, `api_error`, `not_configured`, `empty_reply`, `max_rounds`, `guard_rejected`, `internal_error`, `data_unavailable`(데이터 소스(BE) 장애. `card_type="data_unavailable"`, 이전 값·추정값으로 답하지 않음). LLM 응답이면 `null` |
 | `guard_triggered` | LLM 문장이 후처리 검증(§6.1)에 걸려 도구 결과 기반 템플릿 문장으로 바뀌었는지 |
 | `data_updated_at` | 응답 근거 데이터의 기준 시각 (ISO-8601) |
 
@@ -355,15 +376,17 @@ Content-Type: application/json
 4. 도구의 역 ID 인자(station_id, start_id, end_id)에는 resolve_station 결과나 세션 컨텍스트에 있는 ID만 넣으십시오. 역 ID를 추측해서 만들지 마십시오.
 5. "거기", "그 역", "그곳", "여기" 같은 지칭은 세션 컨텍스트의 '최근 조회/언급 역'을 뜻합니다. 그 ID로 바로 도구를 호출하십시오. 다른 역 이름과 함께 나와도("신촌에서 그 역까지") 지칭은 최근 역을 가리킵니다.
 6. 대체역을 물으면("다른 역은?", "거기 말고", "대신 어디로", "우회" 등) plan_trip을 start_id와 end_id에 같은 역 ID를 넣어 호출하고, 결과의 detours에 있는 역만 안내하십시오. detours가 비어 있으면 대체역 정보가 없다고 답하십시오.
-7. 사용자 질의에 출발역이 생략되어 있고 시간 역산을 요구할 경우, 세션 컨텍스트의 최근 역(last_station_id)을 확인하고, 그것도 없다면 기본값("sindorim", 신도림역)을 출발역으로 지정하여 계산하고 사용자에게 "출발역이 지정되지 않아 신도림역 기준으로 안내합니다"라고 명확히 밝히십시오.
+7. 사용자 질의에 출발역이 생략되어 있고 시간 역산을 요구할 경우, 세션 컨텍스트의 최근 역을 확인하고, 그것도 없다면 세션 컨텍스트의 '기본 출발역'을 출발역으로 지정하여 계산하고 사용자에게 "출발역이 지정되지 않아 {default_origin_name}역 기준으로 안내합니다"라고 명확히 밝히십시오.
 8. 시각은 반드시 HH:MM(24시간제)으로 바꿔 도구에 전달하십시오. 예: "3시 반" → "15:30".
 9. 안내 문장은 정중하고 짧게 작성하며, 도구 결과에 명시된 시각, 역명, 우회 팁만을 사실 그대로 전달하십시오. 시각은 도구 결과의 값을 그대로 쓰고 반올림하지 마십시오.
 10. 도구 결과 외의 임의의 역명이나 임의의 소요 시간을 지어내어 말하면 절대 안 됩니다. 도구가 error나 is_possible=false를 반환하면 계산할 수 없다는 사실을 그대로 알리되, is_possible 같은 필드 이름이나 역 ID는 사용자에게 보여주지 마십시오.
+11. 엘리베이터 상태가 UNKNOWN이거나 data_fresh가 false면 "정상", "이용 가능"처럼 단정하지 말고 확인된 대수와 확인하지 못한 대수를 그대로 말하십시오. 도구 결과의 limitations 문장은 빼거나 바꾸지 말고 전달하십시오. 도구 결과에 data_unavailable이 있으면 지금은 정보를 확인할 수 없다고만 안내하십시오.
 
 [현재 세션 컨텍스트]
 - 현재 기준 시각: {current_time}
 - 최근 조회/언급 역: {last_station}
 - 최근 경로: {last_route_summary}
+- 기본 출발역: {default_origin}
 ```
 
 역 사전 확인 옵션(`LLM_PRERESOLVE=true`, 구현 현황 §4.6)을 켜면 끝에 다음 블록을 붙인다.

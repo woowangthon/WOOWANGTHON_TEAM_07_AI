@@ -303,7 +303,7 @@ CSV(이 레포 `data/raw/`, BE 확인 기준 11-12 작성 파일)와 API(11-13 �
 
 ## 6. AI 도구 스키마와의 대응 (제안)
 
-현재 `src/models.py`의 출력 모델을 최대한 유지하면서 실데이터를 넣는 방법이다.
+현재 `src/models.py`의 출력 모델을 최대한 유지하면서 실데이터를 넣는 방법이다. (2026-11-13 제안. 실제로는 BE API 응답을 받는 방식으로 정해졌으며, 현재 대응은 §9.)
 
 ### 6.1 엘리베이터 (`get_elevator_status`, `get_broken_elevators`)
 
@@ -373,10 +373,13 @@ CSV(이 레포 `data/raw/`, BE 확인 기준 11-12 작성 파일)와 API(11-13 �
 | 항목 | 담당 | 비고 |
 |---|---|---|
 | 서비스 문구의 "실시간"을 "1시간 단위 갱신"에 맞게 조정 | 팀 | 공식 설명은 "매시". 응답에 갱신 시각이 없어 실제 주기는 미검증 |
-| 상태 TTL(오래된 정보로 볼 기준) | BE·AI | BE 이슈 #26은 30분(임시), `BE/docs/api-notes.md`는 2시간(추정). 하나로 정해 계약에 적어야 함 |
-| 역 ID 형식 | AI·BE·FE | BE DB `station_id`는 정수 자동 증가, AI 도구·FE 액션은 문자열(`"gangnam"`). LLM 도구 인자와 FE `payload`에 들어가는 값이므로 계약(BE #14)에서 정함 |
-| 설비 상태 표기 | AI·BE | BE DB `가동중`/`가동 안됨`, AI `AVAILABLE`/`UNAVAILABLE`. API 응답 표기를 계약에서 정함. 정보 없음은 상태 값이 아니라 별도 표시 (BE #14) |
-| 엘리베이터 ID | AI·BE | 원본에 고유 ID가 없음. AI `ElevatorSegment.segment_id`에는 BE `elevator_id`를 쓰는 안 |
+| ~~상태 TTL~~ | BE·AI | **BE 계약 D1: 120분(임시, `ELEVATOR_STATUS_TTL_MINUTES`).** AI는 BE의 `data_fresh` 판정을 그대로 쓴다 (§9) |
+| ~~역 ID 형식~~ | AI·BE·FE | **BE 계약: 정수.** AI는 BE 연동 시 BE `station_id`를 문자열로 바꿔 도구 인자에 쓴다 (§9.2). Mock은 기존 문자열 ID 유지 |
+| ~~설비 상태 표기~~ | AI·BE | **BE 계약: `가동중`/`가동 안됨`/`null` + `unknown_reason`(`NO_DATA`/`STALE`).** AI 도구 출력 변환은 §9.3 |
+| ~~엘리베이터 ID~~ | AI·BE | BE `elevator_id`(정수)를 `segment_id`에 문자열로 쓴다 |
+| 출발 시각 계산식과 대기 시간 기본값 | 팀·BE·AI | BE `/api/departure-time`의 `buffer_minutes` 기본 0분 vs AI 5분(배차 3 + 여유 2). 나머지(도보 7·진입 3·출구 3)는 같음. FE와 챗봇이 같은 값을 쓰도록 BE 한 곳에서 정하자고 BE #14에 제안 (2026-11-14) |
+| `/api/elevators/status`의 노선 필터 | BE | 응답에 노선이 없어 "2호선 고장 역"에 역마다 추가 호출이 필요. BE #14에 요청 |
+| 경로 API(BE #37)와 `travel_minutes` 출처 | BE | #37 전까지 검증된 이동 시간이 없음. #37 응답을 `/api/departure-time`에 넣는 흐름인지 BE #14에 확인 요청 |
 | OA-21212가 종료된 서비스인지, 계속 받을 수 있는지 | BE | 공식 페이지에 종료 안내 문구가 보임 |
 | OA-22740, OA-22725 공식 페이지 정보(갱신 주기 등) | BE | 2026-11-13 접속 오류로 미확인 |
 | 수집 예정 4종의 실제 응답 컬럼 | BE | 받은 뒤 `sources.json`·§4.7 갱신 |
@@ -385,7 +388,31 @@ CSV(이 레포 `data/raw/`, BE 확인 기준 11-12 작성 파일)와 API(11-13 �
 | `oprtngSitu`의 `M`/`S`, `NODE_TYPE_CD` 0/1/2 공식 의미 | BE | 공식 페이지에 없음 |
 | 휠체어 환승·엘리베이터 이동 여유 시간 고정값 | 팀 | §7 |
 | 휠체어리프트(`WL`)를 휠체어 경로에 포함할지 | 팀 | |
-| `ElevatorSegment`에 `concourse`·`UNKNOWN` 추가, 추천 칸·문 필드 추가 | AI·BE·FE | 명세서 §3 계약 변경 |
-| ~~AI가 읽을 방식: 읽기 전용 DB 뷰 vs BE API~~ | AI·BE | **AI 제안: BE API 호출** (2026-11-13, AI 이슈 #1). 근거: BE가 대체역(#32·#33)·경로(#36·#37)·출발 시각(#38·#39) 계산 API를 만들기로 했으므로 같은 결과를 FE와 챗봇이 공유한다. DB 스키마 변경에 AI가 영향받지 않는다. BE 확인 대기 |
-| ~~경로·대체역 계산을 AI/BE 중 어디서~~ | AI·BE | **AI 제안: BE** (위와 같은 근거). AI는 Mock 데이터 소스와 폴백 엔진만 유지하고, BE 장애 시 Mock 값으로 답하지 않고 "확인할 수 없음"으로 안내 (AI 이슈 #10). BE 확인 대기 |
+| ~~`ElevatorSegment`에 `UNKNOWN` 추가~~ | AI | 2026-11-14 반영 (명세 §3.2). `concourse` 분류·추천 칸·문 필드는 BE 응답에 원천 정보가 없어 보류 |
+| ~~AI가 읽을 방식: 읽기 전용 DB 뷰 vs BE API~~ | AI·BE | **BE API 호출로 확정** (2026-11-14). BE가 역·엘리베이터·대체역·출발 시각 API를 구현했고, `BE/docs/demo-handoff.md` "AI 인계"가 이 API를 AI 입력으로 지정함 |
+| ~~경로·대체역 계산을 AI/BE 중 어디서~~ | AI·BE | **BE로 확정** (위와 같음). 대체역은 BE BFS(#33), 출발 시각은 BE 역산(#39). 경로(#37)는 미구현이라 그동안 AI Mock 계산을 "추정"으로 안내. BE 장애 시 Mock 값으로 답하지 않고 "확인할 수 없음"으로 안내 (AI 이슈 #10) |
 | 커버리지 밖이 된 신도림 1호선 처리, 기본 출발역 | 팀 | §5 |
+
+---
+
+## 9. BE API 계약과 AI 도구의 대응 (2026-11-14)
+
+기준: BE `docs/api-contract.md`(BE `main` 342a9d0). AI 쪽 리뷰는 BE 이슈 #14 코멘트(2026-11-14). 필드 단위 변환 규칙은 IMPLEMENTATION_STATUS §4.8에 있다.
+
+| AI 도구 | BE API | 상태 |
+|---|---|---|
+| `resolve_station` | `GET /api/stations/{id}` (목록 API가 없어 ID 순으로 읽어 캐시) | ✅ 연동. 별칭·미지원 키워드는 AI 사전 |
+| `get_elevator_status` | `GET /api/stations/{id}/elevators` | ✅ 연동. 판정 규칙은 BE §6.2와 같음 |
+| `get_broken_elevators` | `GET /api/elevators/status` | ✅ 연동. 노선은 역 목록의 노선으로 거름 |
+| `plan_trip` 대체역 | `GET /api/stations/{id}/alternatives` | ✅ 연동 (BE 계약 §8.1은 초안) |
+| `plan_trip` 경로·소요 시간 | `GET /api/routes` (BE #37) | ❌ BE 미구현. AI Mock 2호선 계산을 추정으로 안내 |
+| `plan_trip` 출발 시각 | `POST /api/departure-time` | ⏸ 연동 보류. 대기 시간 기본값(BE 0분, AI 5분) 통일과 이동 시간 출처(#37)가 정해진 뒤 |
+| (없음) | `GET /api/stations/{id}/arrivals` | 사용 안 함. 외부 출처 미연동으로 항상 `UNCONFIRMED` |
+
+BE 데이터에서 확인한 사실 (데모 DB, 2026-11-14):
+
+- 역 240개, 괄호를 뗀 기본 역명이 겹치는 역은 없다. AI Mock 역 46개(2호선 순환선 43개 포함)와 별칭 10개의 대상 역이 모두 BE에 있다.
+- 역명에 괄호 부제가 55개 있다 (`잠실(송파구청)`, `신촌(지하)`, `총신대입구(이수)`). `서울역`만 "역"이 붙어 있다.
+- 검색(`q`)은 부분 일치다 (`잠실` → 잠실, 잠실나루, 잠실새내). AI는 검색을 쓰지 않고 캐시한 목록에서 기본 역명으로 정확히 찾는다.
+- 엘리베이터 상태는 2026-11-13 1회 수집 샘플이라 TTL(120분)을 넘어 대부분 `STALE`이다. 합성 설비 5건(`[DEMO/SYNTHETIC]`)만 확인 상태다(강남·선릉 `가동 안됨`, 역삼·교대·남부터미널 `가동중`).
+
