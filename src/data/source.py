@@ -1,13 +1,13 @@
 """데이터 소스 인터페이스.
 
 도구(src/tools/)와 폴백 엔진은 Mock 데이터 모듈을 직접 읽지 않고 이 인터페이스를 거칩니다.
-지금은 MockDataSource 하나뿐이고, BE API 연동(이슈 #4~#6) 때 BE 구현을 추가합니다.
+구현: MockDataSource(mock_source.py), BeDataSource(be_source.py, BE API 호출. 이슈 #4, #5).
 
     from AI.src.data.source import get_data_source
     src = get_data_source()
     src.station("gangnam")
 
-구현 선택: 환경 변수 AI_DATA_SOURCE (기본 "mock").
+구현 선택: 환경 변수 AI_DATA_SOURCE (기본 "mock", BE 연동은 "be").
 테스트에서는 use_data_source(가짜_구현)으로 잠깐 바꿔 끼울 수 있습니다.
 
 계산 위치:
@@ -22,12 +22,20 @@ from datetime import datetime
 from typing import Dict, Iterator, List, Optional, Protocol, Tuple
 
 
+class DataUnavailableError(RuntimeError):
+    """데이터 소스(BE)에 연결할 수 없거나 응답을 해석할 수 없을 때.
+
+    도구는 이 오류를 그대로 올리고, 응답은 "확인할 수 없음"으로 안내합니다 (이전 값이나 Mock 값으로 답하지 않음).
+    """
+
+
 class DataSource(Protocol):
     """도구와 폴백 엔진이 쓰는 데이터 조회 인터페이스.
 
-    역 dict 형식: {"id": str, "name": str ('역' 없음), "lines": ["2", ...]}
+    역 dict 형식: {"id": str, "name": str ('역'·괄호 부제 없음), "lines": ["2", ...]}
     엘리베이터 dict 형식: ElevatorSegment 필드와 같음
-        {"segment_id", "type", "location", "floors", "status", "reason"}
+        {"segment_id", "type", "location", "floors", "status", "unknown_reason", "fetched_at", "reason"}
+    BE 구현의 메서드는 연결 실패 시 DataUnavailableError를 냅니다.
     """
 
     # --- 역 ---
@@ -53,10 +61,18 @@ class DataSource(Protocol):
     def all_elevators(self) -> Dict[str, List[dict]]:
         """엘리베이터 데이터가 있는 모든 역 (키: 역 ID). 전체 운행 상태 조회용."""
 
-    def data_updated_at(self, now: Optional[datetime] = None) -> Tuple[str, int]:
-        """엘리베이터 데이터 기준 시각(ISO-8601 KST)과 경과 분."""
+    def data_updated_at(self, now: Optional[datetime] = None) -> Tuple[Optional[str], Optional[int]]:
+        """설비에 수집 시각이 없을 때 쓰는 데이터 기준 시각(ISO-8601 KST)과 경과 분. 모르면 (None, None)."""
 
     # --- 대체역·경로 ---
+    def alternative_candidates(self, station_id: str) -> Optional[dict]:
+        """데이터 소스가 직접 계산한 대체역 후보. 계산 기능이 없으면 None (도구가 아래 두 메서드로 찾음).
+
+        형식: {"candidates": [{"id", "name", "stops", "same_line", "status"}, ...] (추천 순),
+               "limitations": [str, ...], "empty_reason": Optional[str]}
+        후보는 엘리베이터 가동이 확인된 역(AVAILABLE·PARTIAL)만 담습니다.
+        """
+
     def registered_alternative(self, station_id: str) -> Optional[dict]:
         """고장 역에 등록된 대체역 안내 {"alt_id", "distance_m", "walk_min", "tip"}. 없으면 None."""
 
@@ -69,15 +85,16 @@ class DataSource(Protocol):
     def timing(self) -> Dict[str, int]:
         """시간 계산 상수 (분). 키는 mock_data.TIMING_PARAMS와 같음."""
 
-    def detour_defaults(self) -> Tuple[int, int]:
-        """대체역 거리 정보가 없을 때 쓰는 (거리 m, 도보 분)."""
-
 
 def _create(name: str) -> DataSource:
     if name == "mock":
         from .mock_source import MockDataSource
         return MockDataSource()
-    raise ValueError(f"알 수 없는 데이터 소스입니다: {name!r} (현재 지원: mock)")
+    if name == "be":
+        from ..config import settings
+        from .be_source import BeDataSource
+        return BeDataSource(settings.BE_API_BASE_URL, settings.BE_API_TIMEOUT_SECONDS)
+    raise ValueError(f"알 수 없는 데이터 소스입니다: {name!r} (현재 지원: mock, be)")
 
 
 _current: Optional[DataSource] = None

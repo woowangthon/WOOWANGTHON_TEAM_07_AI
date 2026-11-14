@@ -1,49 +1,78 @@
 """도구 4: plan_trip — 경로 탐색 + 엘리베이터 우회 + 출발 시각 역산 통합. 명세 §3.4"""
 
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from ..data import get_data_source, station_name
 from ..models import DetourInfo, PlanTripOutput, RouteInfo, RouteLeg, TripBreakdown
 from .common import parse_hhmm
-from .elevator import get_elevator_status, is_blocked
+from .elevator import get_elevator_status
+
+# 추정 계산 안내 (BE /api/departure-time의 limitations와 같은 취지)
+LIMIT_ESTIMATED = "열차 시간표와 실제 경로 탐색을 쓰지 않은 추정 계산이며 탑승 가능한 열차는 확인되지 않음"
+
+
+def _unconfirmed_alt(alt_name: str) -> str:
+    return f"대체역 {alt_name}역의 엘리베이터 상태는 확인되지 않음"
+
+
+def find_alternatives(station_id: str, target_type: str = "end") -> Tuple[List[DetourInfo], List[str]]:
+    """엘리베이터를 쓸 수 없는 역의 대체역 후보와 limitations를 반환합니다 (추천 순).
+
+    데이터 소스가 대체역을 계산하면(BE) 그 결과를 그대로 씁니다.
+    계산하지 않으면(Mock):
+      1. 등록된 대체역 안내 — 대체역이 고장으로 확인되면 제외. 상태가 미확인이면 limitations에 밝힘
+      2. 없으면 인접 역 중 엘리베이터 가동이 확인된 역(AVAILABLE·PARTIAL)
+    거리·도보 시간은 확인된 값만 넣고 기본값으로 채우지 않습니다.
+    """
+    src = get_data_source()
+    broken_name = station_name(station_id)
+    reason = f"{broken_name}역 엘리베이터 이용 불가 구간 있음"
+
+    calc = src.alternative_candidates(station_id)
+    if calc is not None:
+        detours = [
+            DetourInfo(
+                target_type=target_type, broken_station_id=station_id,
+                alternative_station_id=c["id"], alternative_station_name=c["name"],
+                stops_away=c.get("stops"), same_line=c.get("same_line"),
+                alternative_status=c.get("status") or "UNKNOWN", reason=reason,
+            )
+            for c in calc["candidates"]
+        ]
+        return detours, list(calc.get("limitations") or [])
+
+    entry = src.registered_alternative(station_id)
+    if entry:
+        alt_id = entry["alt_id"]
+        alt_status = get_elevator_status(alt_id)
+        if alt_status.overall_status not in ("PARTIAL", "UNAVAILABLE"):
+            alt_name = station_name(alt_id)
+            limitations = [] if alt_status.overall_status == "AVAILABLE" else [_unconfirmed_alt(alt_name)]
+            return [DetourInfo(
+                target_type=target_type, broken_station_id=station_id,
+                alternative_station_id=alt_id, alternative_station_name=alt_name,
+                surface_distance_m=entry["distance_m"], surface_walk_minutes=entry["walk_min"],
+                alternative_status=alt_status.overall_status, bus_tip=entry["tip"], reason=reason,
+            )], limitations
+
+    for neighbor in src.neighbor_stations(station_id):
+        status = get_elevator_status(neighbor)
+        if status.overall_status in ("AVAILABLE", "PARTIAL"):
+            alt_name = station_name(neighbor)
+            return [DetourInfo(
+                target_type=target_type, broken_station_id=station_id,
+                alternative_station_id=neighbor, alternative_station_name=alt_name,
+                stops_away=1, alternative_status=status.overall_status,
+                bus_tip=f"인접한 {alt_name}역 엘리베이터 이용 권장 (지상 이동 거리 정보 없음)", reason=reason,
+            )], []
+    return [], []
 
 
 def find_alternative(station_id: str, target_type: str = "end") -> Optional[DetourInfo]:
-    """엘리베이터를 쓸 수 없는 역의 대체역을 찾습니다.
-
-    1. 데이터 소스에 등록된 대체역 안내가 있으면 사용합니다.
-    2. 없으면 인접 역(neighbor_stations) 중 엘리베이터 고장이 확인되지 않은 역을 고릅니다.
-       (거리 정보가 없으므로 detour_defaults() 기본값 사용)
-    대체역 자체가 고장으로 확인되면 추천하지 않습니다.
-    """
-    src = get_data_source()
-    default_m, default_min = src.detour_defaults()
-    broken_name = station_name(station_id)
-    entry = src.registered_alternative(station_id)
-    if entry and not is_blocked(entry["alt_id"]):
-        alt_id = entry["alt_id"]
-        return DetourInfo(
-            target_type=target_type, broken_station_id=station_id,
-            alternative_station_id=alt_id, alternative_station_name=station_name(alt_id),
-            surface_distance_m=entry["distance_m"] or default_m,
-            surface_walk_minutes=entry["walk_min"] or default_min,
-            bus_tip=entry["tip"],
-            reason=f"{broken_name}역 엘리베이터 이용 불가 구간 있음",
-        )
-
-    for neighbor in src.neighbor_stations(station_id):
-        if not is_blocked(neighbor):
-            alt_name = station_name(neighbor)
-            return DetourInfo(
-                target_type=target_type, broken_station_id=station_id,
-                alternative_station_id=neighbor, alternative_station_name=alt_name,
-                surface_distance_m=default_m,
-                surface_walk_minutes=default_min,
-                bus_tip=f"인접한 {alt_name}역 엘리베이터 이용 권장 (거리 정보 없음)",
-                reason=f"{broken_name}역 엘리베이터 이용 불가 구간 있음",
-            )
-    return None
+    """가장 먼저 추천하는 대체역 하나. 없으면 None."""
+    detours, _ = find_alternatives(station_id, target_type)
+    return detours[0] if detours else None
 
 
 def plan_trip(
@@ -107,18 +136,29 @@ def plan_trip(
 
     # 2. 출발역·도착역 엘리베이터 검사 및 대체역
     detours: List[DetourInfo] = []
-    checks = [("end", end_id)] if start_id == end_id else [("start", start_id), ("end", end_id)]
+    limitations: List[str] = []
+    same_station = start_id == end_id
+    checks = [("end", end_id)] if same_station else [("start", start_id), ("end", end_id)]
     for role, sid in checks:
         status = get_elevator_status(sid)
+        role_label = "출발역인 " if role == "start" and not same_station else ""
+        if status.overall_status == "UNKNOWN":
+            # 정상으로 간주하지 않는다 (BE 계약 §6.3). 대체역 조회는 이용 불가가 확인된 경우만.
+            limitations.append(f"{role_label}{status.station_name}역 엘리베이터 상태를 확인하지 못함")
+            continue
+        if not status.data_fresh and not same_station:
+            # 대체역만 묻는 경우는 역 상태 안내에 이미 같은 문장이 있다
+            limitations.append(f"{status.station_name}역: {status.limitations[0]}")
         if status.overall_status not in ("PARTIAL", "UNAVAILABLE"):
             continue
-        role_label = "출발역인 " if role == "start" and start_id != end_id else ""
-        alt = find_alternative(sid, target_type=role)
-        if alt:
-            detours.append(alt)
+        alts, alt_limits = find_alternatives(sid, target_type=role)
+        limitations += alt_limits
+        if alts:
+            # 대체역만 묻는 경우(출발=도착)는 후보를 모두, 경로 계산은 첫 후보만 붙인다.
+            detours += alts if same_station else alts[:1]
             warnings.append(
                 f"{role_label}{status.station_name}역 엘리베이터에 이용 불가 구간이 있습니다. "
-                f"대체역({alt.alternative_station_name}역) 이용을 권장합니다."
+                f"대체역({alts[0].alternative_station_name}역) 이용을 권장합니다."
             )
         else:
             warnings.append(f"{role_label}{status.station_name}역 엘리베이터에 이용 불가 구간이 있습니다.")
@@ -159,4 +199,24 @@ def plan_trip(
         detours=detours,
         breakdown=breakdown,
         warnings=warnings,
+        estimated=True,
+        limitations=([LIMIT_ESTIMATED] if (is_possible and not same_station) else []) + limitations,
     )
+
+
+def detour_text(d: dict) -> str:
+    """대체역 한 줄 설명 (응답 빌더·폴백 엔진 공용). d는 DetourInfo의 dict.
+
+    확인된 정보만 씁니다: 등록된 안내 문구 > 정거장 수·노선 공유 > 이름만.
+    """
+    name = d["alternative_station_name"]
+    if d.get("bus_tip"):
+        return f"{name}역 ({d['bus_tip']})"
+    details = []
+    if d.get("stops_away"):
+        details.append(f"{d['stops_away']}정거장 거리")
+    if d.get("same_line"):
+        details.append("같은 노선")
+    if d.get("alternative_status") in ("AVAILABLE", "PARTIAL"):
+        details.append("엘리베이터 가동 확인")
+    return f"{name}역 ({', '.join(details)})" if details else f"{name}역"

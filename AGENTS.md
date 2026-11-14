@@ -8,7 +8,7 @@
 우왕톤 7팀 "엘리베이터 지하철" 서비스의 **AI 파트**. 휠체어·유모차 이용자에게 지하철 엘리베이터 상태, 고장 시 대체역, 늦지 않는 출발 시각을 챗봇으로 안내한다.
 LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도구가 한다. LLM이 실패하면 규칙 기반 폴백 엔진이 같은 형식으로 답한다.
 
-현재 단계: Phase 1 완료(도구·폴백·테스트). Phase 2·3의 AI 내부 작업(`/api/chat` 오케스트레이터, 세션, 폴백 전환, 후처리 검증)과 50문항 벤치마크 구현. 응답 속도 옵션(역 사전 확인·템플릿 답변)을 넣어 `gemini-3.5-flash-lite` 조합이 P95 1.5초로 목표 안에 들었으나 기본값(`gpt-5.1`, 옵션 끔)은 팀 결정 대기. BE API 연동이 남음.
+현재 단계: Phase 1 완료(도구·폴백·테스트). Phase 2·3의 AI 내부 작업(`/api/chat` 오케스트레이터, 세션, 폴백 전환, 후처리 검증)과 50문항 벤치마크 구현. 응답 속도 옵션(역 사전 확인·템플릿 답변)을 넣어 `gemini-3.5-flash-lite` 조합이 P95 1.5초로 목표 안에 들었으나 기본값(`gpt-5.1`, 옵션 끔)은 팀 결정 대기. BE API 데이터 소스(`AI_DATA_SOURCE=be`)로 역·엘리베이터·대체역을 BE에서 읽고, 상태 판정은 BE 계약 규칙과 같다. BE 경로 API(#37)가 없어 경로·출발 시각은 아직 Mock 2호선 계산(추정 안내).
 상세 현황: [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md)
 
 ## 2. 읽는 순서
@@ -38,8 +38,9 @@ LLM이 사용자 말을 해석해 도구를 호출하고, 계산은 Python 도�
 
 ```powershell
 pip install -r requirements.txt          # pydantic, openai, fastapi, uvicorn, httpx, pytest
-python -m pytest                         # 전체 테스트 (182건). 작업 전후로 반드시 실행
+python -m pytest                         # 전체 테스트 (217건). 작업 전후로 반드시 실행
 python scripts/run_server.py             # /api/chat 개발 서버 (http://127.0.0.1:8001, 키 없으면 폴백으로 응답)
+                                         # BE 데이터로: .env에 AI_DATA_SOURCE=be (BE 서버 먼저 실행, BE/docs/demo-handoff.md)
 python scripts/llm_demo.py "사당역 엘리베이터 돼?"              # FactChat 게이트웨이 왕복 데모 (API 키 필요)
 python scripts/llm_demo.py --provider nvidia "지금 고장난 역 알려줘"
 python scripts/check_raw_data.py         # data/raw/ 원본 검증 (인코딩·헤더·행 수·값 분포)
@@ -57,7 +58,8 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 | 엘리베이터 상태·고장 목록 | `src/tools/elevator.py` | `tests/tools/test_elevator.py`, IMPLEMENTATION_STATUS §2.2–2.3 |
 | 경로·시간·대체역 계산 | `src/tools/trip.py` | `tests/tools/test_trip.py`, IMPLEMENTATION_STATUS §2.4 |
 | 역·별칭·엘리베이터·대체역·시간 상수 | `src/data/mock_data.py` | `tests/data/test_mock_data.py`가 참조 무결성 검사 |
-| 데이터 소스 인터페이스·구현 (Mock/BE) | `src/data/source.py`, `mock_source.py` | `tests/data/test_data_source.py`, IMPLEMENTATION_STATUS §4.8. 도구·폴백은 `mock_data`를 직접 import하지 않는다 |
+| 데이터 소스 인터페이스·구현 (Mock/BE) | `src/data/source.py`, `mock_source.py`, `be_source.py` | `tests/data/test_data_source.py`, `test_be_source.py`(BE 실제 응답 픽스처), IMPLEMENTATION_STATUS §4.8. 도구·폴백은 `mock_data`를 직접 import하지 않는다 |
+| 상태 판정 규칙·안내 문장·limitations | `src/tools/elevator.py` (`judge`, `describe_status`) | BE `docs/api-contract.md` §6과 같게 유지. `tests/tools/test_status_rules.py`, IMPLEMENTATION_STATUS §2.2·§4.9 |
 | `/api/chat` 처리 흐름·폴백 전환 | `src/llm/orchestrator.py`, `client.py` | `tests/llm/test_orchestrator.py`, IMPLEMENTATION_STATUS §4.1·4.3 |
 | 카드·액션 조립, 템플릿 문장 | `src/llm/response_builder.py` | IMPLEMENTATION_STATUS §4.2 |
 | 세션 슬롯 | `src/llm/session.py` | `tests/llm/test_session.py`, IMPLEMENTATION_STATUS §4.4 |
@@ -71,7 +73,7 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 | 외부 데이터 원본 추가·교체 | `data/raw/`, `data/sources.json` | `docs/DATA_SPEC.md`, `scripts/check_raw_data.py`로 검증 |
 | 실험용 실행 스크립트 | `scripts/` | — |
 
-다음에 만들 것: BE API 데이터 소스 구현(`src/data/`에 추가, 이슈 #4~#6). BE 계약 문서(BE #8, #14)가 나온 뒤 진행한다. 오케스트레이터 테스트는 실제 LLM 대신 `tests/llm/fake_llm.py`의 `FakeLLM`을 쓴다.
+다음에 만들 것: `plan_trip`을 BE 경로·출발 시각 API로 교체(이슈 #6). BE 경로 API(#37)와 대기 시간 기본값 결정 뒤 진행한다. 오케스트레이터 테스트는 실제 LLM 대신 `tests/llm/fake_llm.py`의 `FakeLLM`을 쓴다.
 
 ## 6. 작업 규칙
 
@@ -92,8 +94,9 @@ API 키는 `.env.example`을 `.env`로 복사해 채운다. `src/config.py`가 �
 - LLM 타임아웃: 명세 2.5초 vs `config.py` 3.0초
 - 사용할 LLM 모델과 응답 속도 옵션 기본값: 현재 기본값 FactChat `gpt-5.1`, 옵션 끔. 측정상 후보는 `gemini-3.5-flash-lite` + `LLM_PRERESOLVE=true` + `LLM_ANSWER_MODE=template` (`docs/BENCHMARK.md` §4)
 - 대체역 우선순위: 거리 vs 같은 노선 (설계 검토 §4)
-- 서비스 문구의 "실시간" 표현 (운행 상태 원천 OA-15994는 매시 갱신), 휠체어 환승·이동 여유 시간 고정값, 상태 TTL, 역 ID 형식, 상태 표기 — `docs/DATA_SPEC.md` §8
-- AI가 데이터를 읽는 방식과 경로·대체역 계산 위치는 AI 쪽 제안(BE API 호출, 계산은 BE)을 DATA_SPEC §8에 적었고 BE 확인을 기다린다. 확정 전까지 BE 구현을 전제로 한 코드를 만들지 않는다.
+- 서비스 문구의 "실시간" 표현 (운행 상태 원천 OA-15994는 매시 갱신), 휠체어 환승·이동 여유 시간 고정값 — `docs/DATA_SPEC.md` §8
+- 출발 시각의 승강장 대기 시간: AI 5분(배차 3 + 여유 2) vs BE `/api/departure-time` `buffer_minutes` 기본 0분. FE와 챗봇이 같은 값을 쓰도록 BE 한 곳에서 정하자고 BE #14에 제안함
+- (정해짐, 2026-11-14) AI는 BE API를 호출하고 대체역·출발 시각 계산은 BE가 한다 — BE가 API를 구현하고 `BE/docs/demo-handoff.md`에서 AI 입력으로 지정. 상태 TTL(120분, 임시)·역 ID(정수)·상태 표기는 BE 계약(`BE/docs/api-contract.md`)을 따른다.
 
 ## 8. 레포 밖 관련 문서
 
