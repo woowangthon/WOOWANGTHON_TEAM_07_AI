@@ -19,6 +19,8 @@ LIMIT_SEGMENT_ESTIMATES = "도보·역 진입·출구 이동 시간은 추정값
 # BE /api/departure-time limitations 중 plan_trip이 전하지 않는 문구 (BE app/services/status_messages.py와 같은 문장)
 BE_LIMIT_ELEVATOR_UNCONFIRMED = "역·설비 상태 정보가 입력되지 않아 엘리베이터 경고를 확인하지 못함"
 BE_LIMIT_ALREADY_PAST = "추천 출발 시각이 현재 시각보다 이미 지났음"
+# 역 ID 없이 이동 시간을 외부 값으로 받았을 때의 BE 문구 (계약 §8.2). AI가 BE 경로의 total_minutes를 넘겼으면 근거가 BE 경로 탐색이다
+BE_LIMIT_TRAVEL_EXTERNAL = "예상 이동 시간은 외부에서 입력한 값이며 경로 탐색으로 검증되지 않음"
 
 KST = timezone(timedelta(hours=9))
 KST_OFFSET = "+09:00"
@@ -280,7 +282,8 @@ def plan_trip(
     minutes_from_now = int((leave_dt - now).total_seconds() // 60)
 
     if be_estimate is not None:
-        time_limits = _be_time_limitations(be_estimate)
+        # travel_minutes를 BE 경로 total_minutes에서 가져왔으면(detail) '외부 입력' 문구는 사실과 다르다 (경로 소요 시간의 한계는 BE 경로 limitations가 알림)
+        time_limits = _be_time_limitations(be_estimate, travel_from_be_route=detail is not None)
     elif not is_possible or same_station:
         time_limits = []
     elif detail is not None:
@@ -334,15 +337,18 @@ def _kst_naive(iso: str) -> datetime:
     return dt.astimezone(KST).replace(tzinfo=None)
 
 
-def _be_time_limitations(estimate: dict) -> List[str]:
+def _be_time_limitations(estimate: dict, travel_from_be_route: bool = False) -> List[str]:
     """BE 역산 응답의 limitations 중 사용자에게 전할 것. 나머지 문구는 바꾸지 않고 순서대로 그대로 전합니다.
 
     빼는 것:
         - 엘리베이터 미확인 문구: 역 ID를 보내지 않았을 때 BE가 붙이는 문구 (BE 경로면 항상 역 ID를 보냄).
         - 이미 지났음 문구: BE 서버 시계 기준. 지각 여부는 AI 기준 시각(요청의 current_time)으로 is_late에 담습니다.
+        - 외부 입력 이동 시간 문구: AI가 travel_minutes로 BE 경로 소요 시간을 보냈을 때만 (값의 출처가 BE 경로 탐색).
     경로 엘리베이터 경고 문구(elevator_warning.message)는 역 ID를 보냈을 때의 판정이므로 그대로 전합니다.
     """
     drop = {BE_LIMIT_ELEVATOR_UNCONFIRMED, BE_LIMIT_ALREADY_PAST}
+    if travel_from_be_route:
+        drop.add(BE_LIMIT_TRAVEL_EXTERNAL)
     return [x for x in (estimate.get("limitations") or []) if isinstance(x, str) and x not in drop]
 
 

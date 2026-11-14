@@ -3,7 +3,7 @@
 > 이 문서는 **현재 코드가 실제로 어떻게 동작하는지**를 정리한다. 목표 설계는 [`AI_DEVELOPMENT_SPEC.md`](./AI_DEVELOPMENT_SPEC.md)에 있다.
 > 코드 동작을 바꾸면 이 문서의 해당 절도 같이 고친다.
 >
-> 최종 갱신: 2026-11-15 · 단위 테스트 312건 통과 (skip 없음)
+> 최종 갱신: 2026-11-15 · 단위 테스트 324건 통과 (skip 없음)
 
 ---
 
@@ -26,7 +26,7 @@
 | LLM 장애 → 폴백 전환 | §6.2 | ✅ | `src/llm/orchestrator.py` |
 | 후처리 환각 검증기 (Guard) | §6.1 | ✅ 역명·시각만 | `src/llm/guard.py` |
 | 50문항 벤치마크 | §8 | ✅ 폴백·`gpt-5.1` 측정, 프롬프트 1차 튜닝 ([BENCHMARK](./BENCHMARK.md)) | `src/eval/`, `scripts/run_benchmark.py` |
-| 백엔드 실데이터 연동 | §7 | 🔸 역·엘리베이터·대체역·경로(`GET /api/routes`)·출발 시각(`POST /api/departure-time`)을 BE API로 연동 (이슈 #6). 경로 연동은 계약 형식의 스텁 응답으로만 테스트했고 실제 BE 서버로는 아직 확인하지 않음. 운행 시간 밖 판정 없음(§6) ([DATA_SPEC](./DATA_SPEC.md) §9) | `src/data/be_source.py` |
+| 백엔드 실데이터 연동 | §7 | 🔸 역·엘리베이터·대체역·경로(`GET /api/routes`)·출발 시각(`POST /api/departure-time`)을 BE API로 연동 (이슈 #6). 경로·출발 시각 테스트는 실제 BE(main 5ff20c1, dev.db 복사본) 녹화 응답을 쓴다(이슈 #12). 운행 시간 밖 판정 없음(§6) ([DATA_SPEC](./DATA_SPEC.md) §9) | `src/data/be_source.py` |
 | 데이터 미확인·BE 장애 안내 | — | ✅ `limitations` 전달·강제, BE 장애 시 "확인할 수 없음" (§4.9) | `src/tools/elevator.py`, `src/llm/orchestrator.py` |
 
 ---
@@ -320,7 +320,7 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 
 ### 4.10 통합 시나리오 테스트 (이슈 #12)
 
-`tests/llm/test_scenarios_be.py` — 실제 `ChatOrchestrator`를 `BeDataSource`에 붙이고, BE는 `httpx.MockTransport`로 흉내 낸다. BE 응답은 데모 DB 서버 실제 응답 픽스처(`tests/data/fixtures/be_demo_responses.json`)와 출발 시각 API 실제 응답(`tests/llm/fixtures/scenario_be_departure_time.json`), 경로 API 합성 응답(`tests/data/fixtures/be_route_responses.json`, 계약 §8.4 형식, 실제 녹화 아님)이다. 가짜 BE는 `POST /api/departure-time`도 BE 계약 공식(§8.2)으로 계산하며, 그 결과가 기록된 실제 응답과 같은지도 검사한다. 역 ID를 받으면 BE 라우터처럼 경로 엘리베이터 경고와 시간표 미사용 이유 문구를 붙인다(시간표 없는 데모 DB 기준). 시나리오는 BE 이슈 #42와 같다.
+`tests/llm/test_scenarios_be.py` — 실제 `ChatOrchestrator`를 `BeDataSource`에 붙이고, BE는 `httpx.MockTransport`로 흉내 낸다. BE 응답은 데모 DB 서버 실제 응답 픽스처(`tests/data/fixtures/be_demo_responses.json`)와 출발 시각 API 실제 응답(`tests/llm/fixtures/scenario_be_departure_time.json`), 경로·출발 시각 API 실제 녹화(아래 "2026-11-15" 항목)이다. 가짜 BE는 `POST /api/departure-time`도 BE 계약 공식(§8.2)으로 계산하며, 그 결과가 기록된 실제 응답과 같은지도 검사한다. 역 ID를 받으면 BE 라우터처럼 경로 엘리베이터 경고와 시간표 미사용 이유 문구를 붙인다(시간표 없는 데모 DB 기준). 시나리오는 BE 이슈 #42와 같다.
 
 | 시나리오 | 질문 예 | 폴백 경로 | LLM 경로 (`FakeLLM`, BE 역 ID로 도구 호출) |
 |---|---|---|---|
@@ -380,8 +380,18 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 | `src/models.py` | `RouteInfo.transfer_station_ids`, `PlanTripOutput.route_source`·`elevator_warning`(`RouteElevatorWarning`)·`timetable_used`·`selected_train`(`SelectedTrain`) |
 | `src/llm/response_builder.py`, `orchestrator.py`, `src/fallback/engine.py` | 경로 요약에 환승 횟수. LLM 문장에 빠진 `plan_trip` 경고를 "⚠️ …"로 덧붙임 |
 | `src/config.py`, `.env.example` | `BE_ROUTE_ESTIMATE` 삭제 (`AI_DATA_SOURCE` 기본값 `mock`은 그대로) |
-| 테스트 | 경로 API 합성 픽스처(`tests/data/fixtures/be_route_responses.json`, 실제 녹화 아님), BE 경로·환승·경고·404·형식 오류·시간표 열차·기본값 일치 테스트, 통합 시나리오 5 구현(skip 해제). 총 312건 통과 |
-| 확인하지 않은 것 | 실제 BE 서버(경로 API 포함)에 붙여 돌려 보지 않았다. 계약 문서와 BE 스키마·라우터 코드를 읽고 만든 스텁으로만 확인 |
+| 테스트 | BE 경로·환승·경고·404·형식 오류·시간표 열차·기본값 일치 테스트, 통합 시나리오 5 구현(skip 해제). 처음에는 계약 형식 합성 픽스처로 만들었고, 이슈 #12에서 실제 녹화로 교체했다(아래 이슈 #12 항목) |
+
+### 2026-11-15 — 실제 BE 녹화 픽스처로 교체 (이슈 #12)
+
+| 추가·변경 | 내용 |
+|---|---|
+| 녹화 | dev.db 복사본으로 띄운 BE(main 5ff20c1)의 실제 응답을 2026-11-15에 녹화. 요청 본문은 `plan_trip`이 실제로 보내는 값(대기 5분, 역 ID 포함). 서버 시계 의존("이미 지났음")을 피하려고 도착 시각은 모두 미래(2026-12-01~06)로 잡았고 각 `_source`에 적었다 |
+| 픽스처 | `tests/data/fixtures/be_route_responses.json`(경로 실제 녹화로 교체), `be_departure_response.json`, `tests/llm/fixtures/scenario_be_departure_time.json`(새로 녹화), `be_departure_plan_responses.json`(신규) |
+| `src/tools/trip.py` | 경로 `total_minutes`를 `travel_minutes`로 보낸 경우 BE limitation "예상 이동 시간은 외부에서 입력한 값이며 경로 탐색으로 검증되지 않음"은 전하지 않는다(값의 출처가 BE 경로 탐색). 역 ID 없이 보낸 요청에서는 그대로 전한다 |
+| 확인 | 단일 노선 `timetable_used=true`+`selected_train`, 환승 `timetable_used=false`, 일요일 04:00 시간표 없음 추정 폴백. 03:00 도착은 BE가 "맞는 열차 없음"이 아니라 그날 막차(00:46 탑승)를 고르고 AI는 그대로 전한다 |
+| 확인하지 않은 것 | "경로 없음" 404 녹화(이 DB는 모든 역이 연결됨, 합성 응답 사용), 엘리베이터 고장이 섞인 경로 경고 녹화(복사본에 상태 데이터 없음, 변형 응답으로 테스트), 실시간·공휴일, 03:00 막차 선택이 BE 의도인지. `be_demo_responses.json`(역·엘리베이터)은 옛 BE(342a9d0) 기준이라 강남 `UNAVAILABLE`이고 새 경로 녹화는 `UNCONFIRMED`로 서로 다르다 |
+| 테스트 | 총 324건 통과 |
 
 ### 2026-11-14 — 팀 결정 반영 (모델·옵션 기본값, 경로 질문 막기, 대기 시간 5분)
 
