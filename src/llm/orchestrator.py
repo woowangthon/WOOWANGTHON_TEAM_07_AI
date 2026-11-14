@@ -20,13 +20,15 @@ from typing import List, Optional, Tuple
 from ..config import settings
 from ..fallback import FallbackEngine
 from ..models import ChatRequest, ChatResponse, ChatResponseMetadata, ToolCallRecord
-from ..data import station_name
+from ..data import DataUnavailableError, station_name
 from ..tools import parse_hhmm, resolve_station
+from ..tools.elevator import format_limitations
 from ..tools.registry import TOOL_SPECS, execute_tool
+from ..tools.trip import detour_text
 from .client import LLMClient, LLMUnavailableError, OpenAICompatClient
 from .guard import check_text
 from .prompts import build_system_prompt
-from .response_builder import ToolResult, build_response
+from .response_builder import DATA_UNAVAILABLE_TEXT, DEFAULT_SUGGESTIONS, ToolResult, build_response
 from .session import SessionContext, SessionStore, update_session
 
 logger = logging.getLogger(__name__)
@@ -64,9 +66,18 @@ def _append_missing_alternatives(text: str, supplements: List[ToolResult]) -> st
     lines = []
     for r in supplements:
         for d in r.result.get("detours", [])[:1] if r.ok else []:
-            name = d["alternative_station_name"]
-            if f"{name}역" not in text:
-                lines.append(f"💡 추천 대체역: {name}역 ({d['bus_tip']})")
+            if f"{d['alternative_station_name']}역" not in text:
+                lines.append(f"💡 추천 대체역: {detour_text(d)}")
+    return "\n".join([text] + lines) if lines else text
+
+
+def _append_missing_limitations(text: str, limitations: List[str]) -> str:
+    """도구 결과의 limitations 문장이 LLM 문장에 없으면 그대로 덧붙입니다 (BE 계약 R9).
+
+    LLM이 "확인되지 않음"을 빼고 요약하면 미확인 상태를 정상처럼 전할 수 있어 코드로 강제합니다.
+    """
+    missing = [x for x in limitations if x not in text]
+    lines = format_limitations(missing)
     return "\n".join([text] + lines) if lines else text
 
 
@@ -152,6 +163,10 @@ class ChatOrchestrator:
 
         try:
             resp, results = self._run_llm(req, ctx, now)
+        except DataUnavailableError as e:
+            # 데이터 소스 장애는 폴백 엔진도 같은 소스를 쓰므로 바로 "확인할 수 없음"으로 답한다.
+            logger.warning("데이터 소스 조회 실패: %s", e)
+            resp, results = self._data_unavailable(req), []
         except (LLMUnavailableError, _NeedFallback) as e:
             reason = e.kind if isinstance(e, LLMUnavailableError) else e.reason
             logger.warning("LLM 응답 실패로 폴백 전환: %s", e)
@@ -167,9 +182,22 @@ class ChatOrchestrator:
     # ------------------------------------------------------------------
     def _fallback(self, req: ChatRequest, ctx: SessionContext, hhmm: str,
                   reason: str) -> Tuple[ChatResponse, List[ToolResult]]:
-        resp = FallbackEngine.process(req.message, req.session_id, hhmm, ctx.as_fallback_ctx())
+        try:
+            resp = FallbackEngine.process(req.message, req.session_id, hhmm, ctx.as_fallback_ctx())
+        except DataUnavailableError as e:
+            logger.warning("폴백 중 데이터 소스 조회 실패: %s", e)
+            return self._data_unavailable(req), []
         resp.metadata.fallback_reason = reason
         return resp, [ToolResult(tc.name, tc.args, {}) for tc in resp.tool_calls]
+
+    @staticmethod
+    def _data_unavailable(req: ChatRequest) -> ChatResponse:
+        """데이터 소스(BE) 장애 응답. 이전 값이나 Mock 값으로 답하지 않는다 (AI 이슈 #10)."""
+        return ChatResponse(
+            session_id=req.session_id, text=DATA_UNAVAILABLE_TEXT, card_type="data_unavailable",
+            suggestions=DEFAULT_SUGGESTIONS,
+            metadata=ChatResponseMetadata(engine="fallback", fallback_used=True, fallback_reason="data_unavailable"),
+        )
 
     def _run_llm(self, req: ChatRequest, ctx: SessionContext,
                  now: datetime) -> Tuple[ChatResponse, List[ToolResult]]:
@@ -179,9 +207,11 @@ class ChatOrchestrator:
         if self.preresolve:
             pre, preresolved_lines = _preresolve(req.message)
             results += pre
+        origin_name = FallbackEngine.DEFAULT_ORIGIN
         messages = [
             {"role": "system", "content": build_system_prompt(
-                hhmm, ctx.last_station_id, ctx.last_station_name, ctx.route_summary(), preresolved_lines)},
+                hhmm, ctx.last_station_id, ctx.last_station_name, ctx.route_summary(), preresolved_lines,
+                default_origin_id=resolve_station(origin_name).station_id, default_origin_name=origin_name)},
             {"role": "user", "content": req.message},
         ]
 
@@ -209,6 +239,11 @@ class ChatOrchestrator:
         else:
             raise _NeedFallback("max_rounds")
 
+        failed = next((r for r in results if r.data_unavailable), None)
+        if failed:
+            # 데이터 소스 장애: LLM 문장이 있어도 쓰지 않는다 (이전 값·추정으로 답할 수 있음). handle()이 받아 답한다.
+            raise DataUnavailableError(failed.result.get("error", "데이터 소스 조회 실패"))
+
         if text is None:
             supplements = _supplement_alternatives(results, now)
             results += supplements
@@ -233,6 +268,7 @@ class ChatOrchestrator:
             text = built.safe_text
         else:
             text = _append_missing_alternatives(text, supplements)
+            text = _append_missing_limitations(text, built.limitations)
 
         return self._make_response(req, text, built, results, guard_triggered=not verdict.ok), results
 

@@ -11,7 +11,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..data import get_data_source, station_name
 from ..models import ActionPayload, ChatResponse, ChatResponseMetadata, ToolCallRecord
-from ..tools import get_broken_elevators, get_elevator_status, parse_hhmm, plan_trip
+from ..tools import get_broken_elevators, get_elevator_status, parse_hhmm, plan_trip, resolve_station
+from ..tools.elevator import describe_status, format_limitations
+from ..tools.trip import detour_text
 
 
 def _station_vocab() -> List[Tuple[str, str]]:
@@ -40,7 +42,7 @@ class FallbackEngine:
     """
 
     # 출발역을 알 수 없을 때 쓰는 기본 출발역 (시스템 프롬프트 명세 §5.1과 동일)
-    DEFAULT_ORIGIN = "sindorim"
+    DEFAULT_ORIGIN = "신도림"  # 역 이름 (resolve_station으로 ID를 찾음)
 
     # 의도 판별 정규식 (Prototype-v2 ai-agent.js의 RX 포팅)
     RX_GREETING = re.compile(r"안녕|도움|뭐\s*할\s*수|사용법|도와줘|하이|hello|\bhi\b|help", re.IGNORECASE)
@@ -308,10 +310,11 @@ class FallbackEngine:
         res = get_broken_elevators(line_id)
         tool_calls = [ToolCallRecord(name="get_broken_elevators", args={"line_id": line_id} if line_id else {})]
         scope = f"{line_id}호선" if line_id else "수도권 지하철 1~8호선"
+        limit_lines = format_limitations(res.limitations)
         if not res.outages:
             return cls._resp(
                 session_id,
-                f"현재 {scope} 모든 역의 엘리베이터가 정상 운행 중입니다 🙂",
+                "\n".join([f"현재 {scope}에서 엘리베이터 이용 불가가 확인된 역은 없습니다."] + limit_lines),
                 "outages_empty", tool_calls=tool_calls,
                 suggestions=["강남역 엘리베이터 돼?", "사용법 알려줘"],
             )
@@ -320,7 +323,8 @@ class FallbackEngine:
         more = " 등" if res.count > 3 else ""
         return cls._resp(
             session_id,
-            f"현재 {line_id + '호선에서 ' if line_id else ''}엘리베이터 이용이 어려운 역은 총 {res.count}곳입니다: {names}{more}.",
+            "\n".join([f"현재 {line_id + '호선에서 ' if line_id else ''}엘리베이터 이용이 어려운 것으로 확인된 역은 "
+                       f"총 {res.count}곳입니다: {names}{more}."] + limit_lines),
             "outages_list",
             tool_calls=tool_calls,
             actions=[
@@ -348,7 +352,8 @@ class FallbackEngine:
                 dest_id = stations[0]["id"]
                 origin_id = last_id
                 if not origin_id:
-                    origin_id = cls.DEFAULT_ORIGIN
+                    # 기본 출발역은 이름으로 둔다 (데이터 소스마다 역 ID 체계가 다름)
+                    origin_id = resolve_station(cls.DEFAULT_ORIGIN).station_id
                     notes.append(f"출발역이 지정되지 않아 {station_name(origin_id)}역 기준으로 안내합니다.")
 
         origin_name, dest_name = station_name(origin_id), station_name(dest_id)
@@ -383,6 +388,7 @@ class FallbackEngine:
                 f"{plan.arrival_time}경 도착합니다. (열차 {plan.route.total_stops}개 역, 엘리베이터·대기 여유 포함)"
             )
         lines += [f"⚠️ {w}" for w in plan.warnings]
+        lines += format_limitations(plan.limitations)
 
         actions = [ActionPayload(
             type="openTime", label="출발 계산 탭에서 열기",
@@ -411,25 +417,21 @@ class FallbackEngine:
         ]
         actions = [ActionPayload(type="openStation", label=f"{name}역 상세 보기", payload={"station_id": sid})]
 
-        if status.overall_status == "AVAILABLE":
-            text = f"현재 {name}역의 모든 엘리베이터는 정상 운행 중입니다. 휠체어 이용에 불편함이 없습니다 🙂"
-        elif status.overall_status in ("PARTIAL", "UNAVAILABLE"):
-            broken = [s for s in status.segments if s.status != "AVAILABLE"]
-            where = ", ".join(f"{s.location}({s.floors})" for s in broken)
-            scope = "전체" if status.overall_status == "UNAVAILABLE" else "일부"
-            text = f"현재 {name}역 엘리베이터 {scope} 구간을 이용할 수 없습니다: {where}."
+        text = describe_status(status.model_dump())
+        limitations = list(status.limitations)
+        if status.overall_status in ("PARTIAL", "UNAVAILABLE"):
             plan_args = {"start_id": sid, "end_id": sid}
             plan = plan_trip(**plan_args)
             tool_calls.append(ToolCallRecord(name="plan_trip", args=plan_args))
+            limitations += [x for x in plan.limitations if x not in limitations]
             if plan.detours:
                 d = plan.detours[0]
-                text += f"\n💡 **추천 대체역**: 인접한 **{d.alternative_station_name}역**을 이용하세요. ({d.bus_tip})"
+                text += f"\n💡 **추천 대체역**: {detour_text(d.model_dump())}"
                 actions.insert(0, ActionPayload(
                     type="showAlternative", label="지도에서 우회 경로 보기",
                     payload={"from": sid, "to": d.alternative_station_id, "path": [sid, d.alternative_station_id]},
                 ))
-        else:
-            text = f"{name}역의 실시간 엘리베이터 정보가 아직 준비되지 않았습니다."
+        text = "\n".join([text] + format_limitations(limitations))
 
         return cls._resp(
             session_id, text, "elevator_status", actions=actions, tool_calls=tool_calls,

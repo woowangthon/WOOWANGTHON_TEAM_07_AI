@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Type
 
 from pydantic import BaseModel, ValidationError
 
+from ..data import DataUnavailableError
 from ..models import (
     BrokenElevatorsInput, ElevatorStatusInput, PlanTripInput, ResolveStationInput,
 )
@@ -110,5 +111,9 @@ def execute_tool(name: str, args: dict, *, now: Optional[datetime] = None) -> di
         return {"error": f"{name} 인자 오류 — {problems}"}
     except ValueError as e:
         return {"error": f"{name} 실행 오류 — {e}"}
+    except DataUnavailableError as e:
+        # 데이터 소스(BE) 장애. 이전 값·추정값으로 답하지 않도록 표시를 붙입니다 (IMPLEMENTATION_STATUS §4.9).
+        return {"error": f"{name} 데이터 조회 실패 — {e}. 이 정보는 지금 확인할 수 없습니다.",
+                "data_unavailable": True}
     return result.model_dump()
 

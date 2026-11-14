@@ -41,6 +41,10 @@ class MockDataSource:
         return stamp, MOCK_FRESHNESS_MIN
 
     # --- 대체역·경로 ---
+    def alternative_candidates(self, station_id: str) -> Optional[dict]:
+        """Mock은 대체역을 계산하지 않습니다 (도구가 등록된 안내와 인접 역으로 찾음)."""
+        return None
+
     def registered_alternative(self, station_id: str) -> Optional[dict]:
         return md.ALTERNATIVES.get(station_id)
 
@@ -66,6 +70,3 @@ class MockDataSource:
 
     def timing(self) -> Dict[str, int]:
         return md.TIMING_PARAMS
-
-    def detour_defaults(self) -> Tuple[int, int]:
-        return md.DEFAULT_DETOUR_DISTANCE_M, md.DEFAULT_DETOUR_WALK_MIN

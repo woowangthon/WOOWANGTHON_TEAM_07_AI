@@ -10,12 +10,19 @@ from typing import List, Optional
 
 from ..data import station_name
 from ..models import ActionPayload
+from ..tools.elevator import describe_status, format_limitations
+from ..tools.trip import detour_text
 
 DEFAULT_SUGGESTIONS = ["강남역 엘리베이터 돼?", "신도림에서 잠실까지 3시까지 가려면?", "지금 고장난 역 알려줘"]
 
 HELP_TEXT = (
     "안녕하세요! 지하철 엘리베이터 가동 현황과 휠체어 대체 우회 경로, 그리고 출발 시각을 안내하는 '우왕이'입니다.\n"
     "어떤 역을 도와드릴까요?"
+)
+
+DATA_UNAVAILABLE_TEXT = (
+    "지금은 역·엘리베이터 정보를 확인할 수 없습니다. 이전 정보나 추정값으로 안내하지 않으니, "
+    "잠시 뒤 다시 물어봐 주세요."
 )
 
 
@@ -30,6 +37,10 @@ class ToolResult:
     def ok(self) -> bool:
         return "error" not in self.result
 
+    @property
+    def data_unavailable(self) -> bool:
+        return bool(self.result.get("data_unavailable"))
+
 
 @dataclass
 class BuiltResponse:
@@ -38,6 +49,12 @@ class BuiltResponse:
     suggestions: List[str]
     safe_text: str
     data_updated_at: Optional[str] = None
+    limitations: List[str] = field(default_factory=list)  # safe_text에 들어간 한계 안내 (LLM 문장에도 강제)
+
+
+def _with_limits(text: str, limitations: List[str]) -> str:
+    lines = format_limitations(limitations)
+    return "\n".join([text] + lines) if lines else text
 
 
 def _last(results: List[ToolResult], name: str, pred=lambda r: True) -> Optional[ToolResult]:
@@ -86,12 +103,14 @@ def _trip(r: ToolResult) -> BuiltResponse:
         ]
     lines += [f"⚠️ {w}" for w in plan["warnings"]]
 
+    limits = plan.get("limitations", [])
     actions = [ActionPayload(
         type="openTime", label="출발 계산 탭에서 열기",
         payload={"originId": origin_id, "destId": dest_id, "arriveBy": arrive_by},
     )]
     actions += _detour_actions(plan["detours"])
-    return BuiltResponse("trip_plan", actions, suggestions, "\n".join(lines))
+    return BuiltResponse("trip_plan", actions, suggestions, _with_limits("\n".join(lines), limits),
+                         limitations=limits)
 
 
 def _elevator(r: ToolResult, results: List[ToolResult]) -> BuiltResponse:
@@ -100,47 +119,49 @@ def _elevator(r: ToolResult, results: List[ToolResult]) -> BuiltResponse:
     actions = [ActionPayload(type="openStation", label=f"{name}역 상세 보기", payload={"station_id": sid})]
     suggestions = [f"{name}역까지 가려면 언제 출발해?", "지금 고장난 역 알려줘"]
 
-    overall = status["overall_status"]
-    if overall == "AVAILABLE":
-        text = f"현재 {name}역의 모든 엘리베이터는 정상 운행 중입니다."
-    elif overall in ("PARTIAL", "UNAVAILABLE"):
-        broken = [s for s in status["segments"] if s["status"] != "AVAILABLE"]
-        where = ", ".join(f"{s['location']}({s['floors']})" for s in broken)
-        scope = "전체" if overall == "UNAVAILABLE" else "일부"
-        text = f"현재 {name}역 엘리베이터 {scope} 구간을 이용할 수 없습니다: {where}."
+    text = describe_status(status)
+    limits = list(status.get("limitations", []))
+    if status["overall_status"] in ("PARTIAL", "UNAVAILABLE"):
         alt = _last(results, "plan_trip",
                     lambda x: x.args.get("start_id") == sid and x.args.get("end_id") == sid)
         if alt and alt.result["detours"]:
-            d = alt.result["detours"][0]
-            text += f"\n추천 대체역: {d['alternative_station_name']}역 ({d['bus_tip']})"
+            text += f"\n추천 대체역: {detour_text(alt.result['detours'][0])}"
             actions = _detour_actions(alt.result["detours"][:1]) + actions
-    else:
-        text = f"{name}역의 엘리베이터 정보를 확인할 수 없습니다."
-    return BuiltResponse("elevator_status", actions, suggestions, text, status.get("updated_at"))
+            limits += [x for x in alt.result.get("limitations", []) if x not in limits]
+    return BuiltResponse("elevator_status", actions, suggestions, _with_limits(text, limits),
+                         status.get("updated_at"), limitations=limits)
 
 
 def _alternative_only(r: ToolResult) -> BuiltResponse:
     sid = r.args.get("start_id")
     name = station_name(sid)
     detours = r.result["detours"]
+    limits = list(r.result.get("limitations", []))
     if detours:
-        d = detours[0]
-        text = f"{name}역 대체역으로 {d['alternative_station_name']}역을 추천합니다. ({d['bus_tip']})"
+        text = f"{name}역 대체역으로 {detour_text(detours[0])}을 추천합니다."
+        others = ", ".join(detour_text(d) for d in detours[1:3])
+        if others:
+            text += f" 다른 후보: {others}."
+    elif any("확인하지 못함" in x for x in limits):
+        text = f"{name}역 엘리베이터 상태를 확인할 수 없어 대체역을 고르지 못했습니다."
     else:
         text = f"{name}역의 대체역 정보를 찾지 못했습니다."
     actions = _detour_actions(detours[:1]) + [
         ActionPayload(type="openStation", label=f"{name}역 상세 보기", payload={"station_id": sid})
     ]
-    return BuiltResponse("elevator_status", actions, [f"{name}역 엘리베이터 상태는?"], text)
+    return BuiltResponse("elevator_status", actions, [f"{name}역 엘리베이터 상태는?"],
+                         _with_limits(text, limits), limitations=limits)
 
 
 def _outages(r: ToolResult) -> BuiltResponse:
     res = r.result
     outages = res["outages"]
+    limits = list(res.get("limitations", []))
     if not outages:
         return BuiltResponse(
             "outages_empty", [], ["강남역 엘리베이터 돼?"],
-            "현재 엘리베이터 고장이 확인된 역이 없습니다.", res.get("updated_at"),
+            _with_limits("현재 엘리베이터 고장이 확인된 역이 없습니다.", limits), res.get("updated_at"),
+            limitations=limits,
         )
     names = ", ".join(f"{o['station_name']}역" for o in outages[:3])
     more = " 등" if res["count"] > 3 else ""
@@ -151,17 +172,23 @@ def _outages(r: ToolResult) -> BuiltResponse:
     ]
     return BuiltResponse(
         "outages_list", actions, [f"{outages[0]['station_name']}역 대체역은?", "강남역 엘리베이터 돼?"],
-        f"현재 엘리베이터 이용이 어려운 역은 총 {res['count']}곳입니다: {names}{more}.",
-        res.get("updated_at"),
+        _with_limits(f"현재 엘리베이터 이용이 어려운 것으로 확인된 역은 총 {res['count']}곳입니다: {names}{more}.",
+                     limits),
+        res.get("updated_at"), limitations=limits,
     )
 
 
 def build_response(results: List[ToolResult]) -> BuiltResponse:
     """도구 결과 목록으로 카드·액션·안전 문장을 만듭니다.
 
-    우선순위: 경로(plan_trip, 출발≠도착) > 엘리베이터 상태 > 대체역만(plan_trip, 출발=도착)
+    우선순위: 데이터 조회 실패 > 경로(plan_trip, 출발≠도착) > 엘리베이터 상태 > 대체역만(plan_trip, 출발=도착)
             > 고장 목록 > 지원 범위 밖 역 > 찾을 수 없는 역 > 도움말
+    데이터 소스(BE) 조회가 하나라도 실패하면 다른 결과가 있어도 "확인할 수 없음"으로 답합니다
+    (일부만 성공한 결과로 단정하지 않음).
     """
+    if any(r.data_unavailable for r in results):
+        return BuiltResponse("data_unavailable", [], DEFAULT_SUGGESTIONS, DATA_UNAVAILABLE_TEXT)
+
     trip = _last(results, "plan_trip", _is_route)
     if trip:
         return _trip(trip)

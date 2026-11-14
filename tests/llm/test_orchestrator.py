@@ -180,7 +180,9 @@ def test_no_supplement_when_alternative_already_called_or_station_ok():
     ])
     res = ask(orch, "신림역 엘리베이터 돼?", session_id="a")
     assert [t.name for t in res.tool_calls] == ["get_elevator_status", "plan_trip"]
-    assert res.text.count("신대방역") == 1
+    assert "💡 추천 대체역" not in res.text  # 보충 줄을 덧붙이지 않음
+    # 대체역 신대방역은 Mock에 엘리베이터 데이터가 없어 미확인 안내가 강제로 붙는다 (R9)
+    assert "※ 대체역 신대방역의 엘리베이터 상태는 확인되지 않음" in res.text
     res = ask(orch, "강남역 엘리베이터 돼?", session_id="b")
     assert [t.name for t in res.tool_calls] == ["get_elevator_status"]
 

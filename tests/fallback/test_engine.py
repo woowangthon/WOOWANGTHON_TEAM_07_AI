@@ -49,7 +49,8 @@ def test_process_elevator_available():
     resp = F.process("강남역 엘리베이터 지금 돼?")
     assert resp.metadata.engine == "fallback" and resp.metadata.fallback_used is True
     assert resp.card_type == "elevator_status"
-    assert "강남" in resp.text and "정상" in resp.text
+    assert "강남" in resp.text and "모두 가동 중" in resp.text
+    assert "※" not in resp.text  # 모두 확인된 역이면 한계 안내가 없다
     assert [tc.name for tc in resp.tool_calls] == ["resolve_station", "get_elevator_status"]
     assert resp.tool_calls[0].args == {"query": "강남"}
 

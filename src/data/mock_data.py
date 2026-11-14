@@ -161,7 +161,7 @@ ELEVATORS: Dict[str, List[dict]] = {
 }
 
 # 고장 역별 대체역 안내 (키: 고장 역 ID)
-# distance_m / walk_min이 None이면 안내 문구에 거리가 없는 것이므로 tools.py의 기본값을 씁니다.
+# distance_m / walk_min이 None이면 확인된 거리가 없는 것이므로 거리를 안내하지 않습니다 (기본값으로 채우지 않음).
 ALTERNATIVES: Dict[str, dict] = {
     "gangnam": {"alt_id": "yeoksam", "distance_m": 800, "walk_min": 10,
                 "tip": "역삼역 3번 출구로 나와 테헤란로를 따라 강남역 방향으로 도보 약 10분 (800m). 146·341번 버스로 1정거장."},
@@ -184,10 +184,6 @@ TIMING_PARAMS: Dict[str, int] = {
     "exit_elevator": 3,           # 도착역 승강장 → 출구
     "safety_margin": 2,           # 교통약자 여유 시간 (최악 대기 = 배차 간격 + 이 값)
 }
-
-# 대체역 거리 정보가 없을 때 쓰는 기본값
-DEFAULT_DETOUR_DISTANCE_M: int = 800
-DEFAULT_DETOUR_WALK_MIN: int = 10
 
 
 def station_name(station_id: Optional[str]) -> str:

@@ -32,13 +32,24 @@ class ResolveStationOutput(BaseModel):
 
 
 # 1-2. get_elevator_status
+# 상태 규칙은 BE 계약(BE/docs/api-contract.md §6)과 같습니다.
+#   설비: BE "가동중" → AVAILABLE, "가동 안됨"(원본 보수중 포함) → UNAVAILABLE, null → UNKNOWN
+#   역:   BE station_status.status null → UNKNOWN
 class ElevatorSegment(BaseModel):
-    segment_id: str = Field(..., description="구간 ID (예: 'ground_to_concourse')")
-    type: Literal["exit", "platform", "transfer"] = Field(..., description="엘리베이터 이동 축/위치")
-    location: str = Field(..., description="설치 위치 (예: '1번 출구 앞')")
-    floors: str = Field(..., description="운행 층 (예: '지상 ↔ B1 대합실')")
-    status: Literal["AVAILABLE", "UNAVAILABLE", "MAINTENANCE"] = Field(..., description="가동 상태")
-    reason: str = Field(default="", description="고장/점검 사유")
+    segment_id: str = Field(..., description="설비 ID (BE elevator_id)")
+    type: Optional[Literal["exit", "platform", "transfer"]] = Field(
+        None, description="이동 축. 원본에 분류가 없으면 None (추정하지 않음)"
+    )
+    location: str = Field(..., description="설치 위치 원문 (예: '1번 출구', '교대 방면3-4')")
+    floors: str = Field(default="", description="운행 층 구간 (예: 'B1-1F'). 없으면 빈 값")
+    status: Literal["AVAILABLE", "UNAVAILABLE", "UNKNOWN"] = Field(
+        ..., description="가동 상태. UNKNOWN은 상태 정보가 없거나 오래된 설비 (정상으로 간주하지 않음)"
+    )
+    unknown_reason: Optional[Literal["NO_DATA", "STALE"]] = Field(
+        None, description="UNKNOWN 사유: NO_DATA(상태 정보 없음) / STALE(유효 시간 초과)"
+    )
+    fetched_at: Optional[str] = Field(None, description="상태를 수집한 시각 (ISO-8601 KST). 없으면 None")
+    reason: str = Field(default="", description="고장/점검 사유. 원본에 없으면 빈 값")
 
 
 class ElevatorStatusInput(BaseModel):
@@ -48,9 +59,19 @@ class ElevatorStatusInput(BaseModel):
 class ElevatorStatusOutput(BaseModel):
     station_id: str
     station_name: str
-    overall_status: Literal["AVAILABLE", "PARTIAL", "UNAVAILABLE", "UNKNOWN"]
-    updated_at: str = Field(..., description="데이터 기준 시각 (ISO-8601)")
-    freshness_minutes: int = Field(default=0, description="기준 시각으로부터 경과된 분")
+    overall_status: Literal["AVAILABLE", "PARTIAL", "UNAVAILABLE", "UNKNOWN"] = Field(
+        ..., description="확인된 설비만으로 판정한 역 상태. 확인된 설비가 없으면 UNKNOWN"
+    )
+    data_fresh: bool = Field(
+        ..., description="모든 설비 상태가 유효 시간 안에 확인됐는지. False면 '정상 운행'처럼 단정하지 않음"
+    )
+    total_count: int = Field(default=0, description="역의 엘리베이터 수")
+    unknown_count: int = Field(default=0, description="상태를 확인하지 못한 엘리베이터 수")
+    updated_at: Optional[str] = Field(None, description="가장 최근 수집 시각 (ISO-8601 KST). 없으면 None")
+    freshness_minutes: Optional[int] = Field(None, description="updated_at으로부터 경과된 분. 없으면 None")
+    limitations: List[str] = Field(
+        default_factory=list, description="사용자에게 그대로 전할 한계 안내 문장 (BE 표준 문구)"
+    )
     segments: List[ElevatorSegment] = Field(default_factory=list)
 
 
@@ -63,16 +84,20 @@ class BrokenStationSummary(BaseModel):
     station_id: str
     station_name: str
     line_ids: List[str]
-    broken_count: int
+    broken_count: int = Field(..., description="이용 불가로 확인된 엘리베이터 수")
     total_count: int
+    unknown_count: int = Field(default=0, description="상태를 확인하지 못한 엘리베이터 수")
     status: Literal["PARTIAL", "UNAVAILABLE"]
     details: List[dict] = Field(default_factory=list)
 
 
 class BrokenElevatorsOutput(BaseModel):
     line_id: Optional[str] = None
-    count: int = Field(..., description="고장 역 수")
-    updated_at: str
+    count: int = Field(..., description="이용 불가 엘리베이터가 확인된 역 수")
+    updated_at: Optional[str] = None
+    limitations: List[str] = Field(
+        default_factory=list, description="상태를 확인하지 못한 설비가 있으면 목록이 전부가 아닐 수 있다는 안내"
+    )
     outages: List[BrokenStationSummary] = Field(default_factory=list)
 
 
@@ -114,9 +139,14 @@ class DetourInfo(BaseModel):
     broken_station_id: str
     alternative_station_id: str
     alternative_station_name: str
-    surface_distance_m: int
-    surface_walk_minutes: int
-    bus_tip: str
+    surface_distance_m: Optional[int] = Field(None, description="지상 이동 거리(m). 확인된 값이 없으면 None")
+    surface_walk_minutes: Optional[int] = Field(None, description="지상 도보 시간(분). 확인된 값이 없으면 None")
+    stops_away: Optional[int] = Field(None, description="고장 역에서 몇 정거장 떨어졌는지 (BE 대체역 distance)")
+    same_line: Optional[bool] = Field(None, description="고장 역과 노선을 하나라도 공유하는지")
+    alternative_status: Literal["AVAILABLE", "PARTIAL", "UNAVAILABLE", "UNKNOWN"] = Field(
+        "UNKNOWN", description="대체역의 엘리베이터 상태"
+    )
+    bus_tip: str = Field(default="", description="이동 안내 문구. 없으면 빈 값")
     reason: str
 
 
@@ -140,6 +170,10 @@ class PlanTripOutput(BaseModel):
     detours: List[DetourInfo] = Field(default_factory=list)
     breakdown: TripBreakdown
     warnings: List[str] = Field(default_factory=list)
+    estimated: bool = Field(True, description="시간표·실측이 아닌 추정 계산인지 (현재 항상 True)")
+    limitations: List[str] = Field(
+        default_factory=list, description="사용자에게 그대로 전할 한계 안내 문장 (추정 계산, 미확인 상태 등)"
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -171,7 +205,7 @@ class ChatResponseMetadata(BaseModel):
     fallback_used: bool = False
     fallback_reason: Optional[str] = Field(
         None, description="폴백 전환 사유 (timeout | rate_limit | network | server_error | api_error | "
-                          "not_configured | empty_reply | max_rounds | guard_rejected | internal_error). LLM 응답이면 None"
+                          "not_configured | empty_reply | max_rounds | guard_rejected | internal_error | data_unavailable). LLM 응답이면 None"
     )
     guard_triggered: bool = Field(
         False, description="LLM 문장이 후처리 검증에 걸려 도구 결과 기반 템플릿 문장으로 바뀌었는지"
