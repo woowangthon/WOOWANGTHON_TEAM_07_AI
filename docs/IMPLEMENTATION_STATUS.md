@@ -303,6 +303,22 @@ LLM 문장에서 `○○역`(앞 2~10글자)과 시각(`HH:MM`, `N시 M분`, `N�
 - `metadata.data_updated_at`은 고른 결과의 `updated_at`(BE는 설비별 `fetched_at` 중 가장 최근 값, Mock은 Mock 기준 시각)이고, 없으면 `None`이다. 응답 생성 시각으로 채우지 않는다 (§4.2). LLM·폴백 경로 모두 같다.
 - 남은 것: "실시간" 표현은 팀 결정 대기.
 
+### 4.10 통합 시나리오 테스트 (이슈 #12)
+
+`tests/llm/test_scenarios_be.py` — 실제 `ChatOrchestrator`를 `BeDataSource`에 붙이고, BE는 `httpx.MockTransport`로 흉내 낸다. BE 응답은 데모 DB 서버 실제 응답 픽스처(`tests/data/fixtures/be_demo_responses.json`)와 출발 시각 API 실제 응답(`tests/llm/fixtures/scenario_be_departure_time.json`)이다. 가짜 BE는 `POST /api/departure-time`도 BE 계약 공식(§8.2)으로 계산하며, 그 결과가 기록된 실제 응답과 같은지도 검사한다(지금 `plan_trip`은 아직 이 API를 부르지 않음). 시나리오는 BE 이슈 #42와 같다.
+
+| 시나리오 | 질문 예 | 폴백 경로 | LLM 경로 (`FakeLLM`, BE 역 ID로 도구 호출) |
+|---|---|---|---|
+| 1 엘리베이터 상태 | "강남역 엘리베이터 돼?", "사당역 엘리베이터 돼?"(전부 STALE) | ○ | ○ — LLM이 뺀 "※" 한계 안내를 코드가 덧붙임, 고장 역 대체역 보충 |
+| 2 대체역 | (강남 다음) "거기 말고 다른 역은?" | ○ — 세션 최근 역, `showAlternative` payload가 BE ID | ○ — 세션 역이 프롬프트에 BE ID로, BE 추천 순(역삼·교대·남부터미널). 지어낸 역(논현)은 검증이 템플릿으로 바꿈 |
+| 3 출발 시각 | "신도림에서 잠실까지 3시까지 가려면?" (12:00) | ○ — 14:06 출발, 14:21 탑승 | ○ — LLM 문장, 역 사전 확인 + 템플릿, 지어낸 시각 교체 |
+| 4 고장·점검 목록 | "지금 고장난 역 알려줘", "2호선에서 엘리베이터 고장 난 역 목록 보여줘" | ○ — 강남·선릉, 미확인 설비 안내 | ○ — 한계 안내 덧붙임 |
+| 5 경로 조회 | "신도림에서 잠실까지 가는 길 알려줘" | — | — (`skip`: BE 경로 API #37 대기. 기대 동작만 적어 둠) |
+| BE 장애 | 연결 실패, 엘리베이터 조회만 5xx | ○ | ○ (역 사전 확인 포함) — `data_unavailable`, `fallback_reason="data_unavailable"` |
+| 지원 범위 밖 | "판교역 엘리베이터 돼?" | ○ | ○ — `out_of_coverage` |
+
+- 출발 시각은 계산 방식이 BE API로 바뀌어도 통과하도록 시각·카드·액션과 한계 안내가 있는지만 확인하고 문구는 고정하지 않는다.
+
 ---
 
 ## 5. 명세와 현재 구현의 차이
