@@ -4,7 +4,9 @@
     1. 세션 슬롯을 꺼내 시스템 프롬프트에 넣는다.
     2. LLM ↔ 도구 왕복 (최대 LLM_MAX_TOOL_ROUNDS회). 도구는 tools.registry.execute_tool로 실행한다.
     3. card_type·actions·suggestions는 도구 결과로 코드가 조립한다 (response_builder).
+       고장 역을 조회했는데 대체역 조회가 빠졌으면 코드가 보충 조회하고, 문장에 없으면 한 줄 덧붙인다.
     4. LLM 문장을 후처리 검증(guard)하고, 근거 없는 역명·시각이 있으면 템플릿 문장으로 바꾼다.
+       도구 결과가 하나도 없는데 검증에 걸리면 폴백 엔진으로 다시 답한다.
     5. LLM을 쓸 수 없으면(타임아웃·429·네트워크 오류·키 없음·빈 응답·왕복 초과) 폴백 엔진으로 같은 형식의 응답을 만든다.
     6. 세션 슬롯을 갱신하고 latency_ms를 기록한다.
 """
@@ -27,6 +29,44 @@ from .response_builder import ToolResult, build_response
 from .session import SessionContext, SessionStore, update_session
 
 logger = logging.getLogger(__name__)
+
+
+def _supplement_alternatives(results: List[ToolResult], now: datetime) -> List[ToolResult]:
+    """고장 역의 대체역 조회가 빠졌으면 코드가 직접 조회합니다.
+
+    엘리베이터 이용 불가 구간이 있는 역(PARTIAL/UNAVAILABLE)을 조회했는데 LLM이 그 역의
+    대체역(plan_trip(sid, sid))을 부르지 않은 경우입니다. 경로 질문(plan_trip, 출발≠도착)이 있으면
+    그 결과에 이미 대체역이 들어 있으므로 보충하지 않습니다.
+    """
+    def has_alt(sid: str, pool: List[ToolResult]) -> bool:
+        return any(r.name == "plan_trip" and r.ok and r.args.get("start_id") == sid == r.args.get("end_id")
+                   for r in pool)
+
+    if any(r.name == "plan_trip" and r.ok and r.args.get("start_id") != r.args.get("end_id") for r in results):
+        return []
+    added: List[ToolResult] = []
+    for r in results:
+        if r.name != "get_elevator_status" or not r.ok:
+            continue
+        if r.result.get("overall_status") not in ("PARTIAL", "UNAVAILABLE"):
+            continue
+        sid = r.result["station_id"]
+        if has_alt(sid, results + added):
+            continue
+        args = {"start_id": sid, "end_id": sid}
+        added.append(ToolResult("plan_trip", args, execute_tool("plan_trip", args, now=now)))
+    return added
+
+
+def _append_missing_alternatives(text: str, supplements: List[ToolResult]) -> str:
+    """보충 조회한 대체역이 LLM 문장에 없으면 도구 결과로 만든 한 줄을 덧붙입니다."""
+    lines = []
+    for r in supplements:
+        for d in r.result.get("detours", [])[:1] if r.ok else []:
+            name = d["alternative_station_name"]
+            if f"{name}역" not in text:
+                lines.append(f"💡 추천 대체역: {name}역 ({d['bus_tip']})")
+    return "\n".join([text] + lines) if lines else text
 
 
 class _NeedFallback(Exception):
@@ -114,11 +154,22 @@ class ChatOrchestrator:
         else:
             raise _NeedFallback("max_rounds")
 
-        built = build_response(results)
+        # 검증은 LLM이 실제로 본 도구 결과만으로 한다.
         verdict = check_text(text, results, req.message, hhmm)
+
+        supplements = _supplement_alternatives(results, now)
+        results += supplements
+        built = build_response(results)
+
         if not verdict.ok:
             logger.warning("후처리 검증 실패 — 역명 %s, 시각 %s", verdict.unknown_stations, verdict.unknown_times)
+            if built.card_type == "help":
+                # 도구 결과로 만들 템플릿이 도움말뿐이면(도구를 안 불렀거나 역 확인만 함) 근거 있는 답을
+                # 만들 수 없으므로 규칙 엔진으로 다시 답한다.
+                raise _NeedFallback("guard_rejected")
             text = built.safe_text
+        else:
+            text = _append_missing_alternatives(text, supplements)
 
         metadata = ChatResponseMetadata(engine="llm", fallback_used=False, guard_triggered=not verdict.ok)
         if built.data_updated_at:
