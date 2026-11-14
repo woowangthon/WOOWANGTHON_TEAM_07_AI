@@ -80,8 +80,19 @@ class DataSource(Protocol):
     def neighbor_stations(self, station_id: str) -> List[str]:
         """인접 역 ID 목록 (가까운 순). 대체역 후보 탐색용."""
 
+    def route_detail(self, start_id: str, end_id: str) -> Optional[dict]:
+        """데이터 소스가 직접 계산한 경로 (BE `GET /api/routes`, 계약 §8.4). 계산 기능이 없으면 None (도구가 find_route를 씀).
+
+        형식: {"found": False}  (BE 404: 두 역을 잇는 경로 없음)
+              {"found": True, "path": [역 ID], "legs": [{"line_id", "from_id", "to_id", "stops", "ride_minutes"}],
+               "transfer_station_ids": [역 ID], "transfers": int, "total_minutes": int,
+               "ride_minutes": int, "transfer_minutes": int,
+               "elevator_warning": {"status", "items": [{"station_id", "station_name", "kind", "message"}], "message"},
+               "limitations": [str, ...]}
+        """
+
     def find_route(self, start_id: str, end_id: str) -> Optional[Tuple[List[str], int, str]]:
-        """(경로 역 ID 목록, 정거장 수, 노선 ID). 계산할 수 없는 구간이면 None."""
+        """(경로 역 ID 목록, 정거장 수, 노선 ID). 계산할 수 없는 구간이면 None. route_detail이 None일 때만 씁니다."""
 
     def timing(self) -> Dict[str, int]:
         """시간 계산 상수 (분). 키는 mock_data.TIMING_PARAMS와 같음."""
@@ -89,10 +100,13 @@ class DataSource(Protocol):
     def departure_estimate(
         self, arrival_at_iso: str, travel_minutes: int, buffer_minutes: int,
         walk_minutes: int, entry_minutes: int, exit_minutes: int,
+        from_station_id: Optional[str] = None, to_station_id: Optional[str] = None,
     ) -> Optional[dict]:
         """도착 희망 시각에서 거꾸로 계산한 권장 출발 시각. 계산 기능이 없으면 None (도구가 직접 계산).
 
         arrival_at_iso: 오프셋이 있는 ISO 8601 초 단위 (예: "2026-12-01T15:00:00+09:00").
+        from_station_id, to_station_id: 함께 주면 BE가 경로 위 역의 엘리베이터 경고를 계산하고,
+            환승 없는 경로면 시간표로 열차를 고를 수 있습니다 (timetable_used, selected_train).
         반환 형식: BE `POST /api/departure-time` 응답 (BE/docs/api-contract.md §8.2)
             {"recommended_departure_at", "estimated_boarding_at", "estimated_alighting_at", "arrival_at",
              "total_minutes", "limitations": [str, ...], ...}  시각은 KST(+09:00) ISO 문자열.
@@ -107,8 +121,7 @@ def _create(name: str) -> DataSource:
     if name == "be":
         from ..config import settings
         from .be_source import BeDataSource
-        return BeDataSource(settings.BE_API_BASE_URL, settings.BE_API_TIMEOUT_SECONDS,
-                            route_estimate=settings.BE_ROUTE_ESTIMATE)
+        return BeDataSource(settings.BE_API_BASE_URL, settings.BE_API_TIMEOUT_SECONDS)
     raise ValueError(f"알 수 없는 데이터 소스입니다: {name!r} (현재 지원: mock, be)")
 
 

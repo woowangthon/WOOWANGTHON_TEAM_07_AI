@@ -86,11 +86,6 @@ class Settings(BaseModel):
         description="BE API 호출 1회 타임아웃 (초). 넘으면 '확인할 수 없음'으로 안내",
     )
 
-    BE_ROUTE_ESTIMATE: bool = Field(
-        default_factory=lambda: _env("BE_ROUTE_ESTIMATE", "false").strip().lower() in ("1", "true", "yes", "on"),
-        description="BE 경로 API(#37)가 없는 동안 Mock 2호선 계산으로 경로·출발 시각을 추정해 답할지. 기본 false(경로 질문은 '아직 지원하지 않음')",
-    )
-
     # HTTP 서버
     CORS_ALLOW_ORIGINS: str = Field(
         default_factory=lambda: _env("CORS_ALLOW_ORIGINS", "*"),

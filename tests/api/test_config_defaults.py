@@ -7,7 +7,7 @@ import pytest
 
 from AI.src.config import Settings
 
-ENV_KEYS = ["FACTCHAT_MODEL", "LLM_PRERESOLVE", "LLM_ANSWER_MODE", "BE_ROUTE_ESTIMATE"]
+ENV_KEYS = ["FACTCHAT_MODEL", "LLM_PRERESOLVE", "LLM_ANSWER_MODE"]
 
 
 @pytest.fixture
@@ -24,10 +24,9 @@ def test_default_model_and_speed_options_are_the_measured_fast_combo(clean_env):
     assert s.LLM_TIMEOUT_SECONDS == 3.0
 
 
-def test_route_estimate_is_off_by_default_and_env_can_enable_it(clean_env, monkeypatch):
-    assert Settings().BE_ROUTE_ESTIMATE is False
-    monkeypatch.setenv("BE_ROUTE_ESTIMATE", "true")
-    assert Settings().BE_ROUTE_ESTIMATE is True
+def test_route_estimate_setting_is_removed(clean_env):
+    """BE 경로 API(#37) 연동으로 Mock 2호선 경로 추정 설정(BE_ROUTE_ESTIMATE)은 없앴다 (AI #6)."""
+    assert not hasattr(Settings(), "BE_ROUTE_ESTIMATE")
 
 
 def test_env_can_still_restore_previous_defaults(clean_env, monkeypatch):

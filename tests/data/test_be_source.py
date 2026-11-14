@@ -18,19 +18,28 @@ from AI.src.fallback import FallbackEngine
 from AI.src.tools import get_broken_elevators, get_elevator_status, plan_trip, resolve_station
 from AI.src.tools.elevator import LIMIT_SOME_UNKNOWN, describe_status
 from AI.src.tools.registry import execute_tool
-from AI.src.tools.trip import BE_LIMIT_ALREADY_PAST, BE_LIMIT_ELEVATOR_UNCONFIRMED, LIMIT_ESTIMATED
+from AI.src.tools.trip import (BE_LIMIT_ALREADY_PAST, BE_LIMIT_ELEVATOR_UNCONFIRMED, LIMIT_ESTIMATED,
+                               LIMIT_NO_TIMETABLE, LIMIT_SEGMENT_ESTIMATES)
 
 FIX = json.loads((Path(__file__).parent / "fixtures" / "be_demo_responses.json").read_text(encoding="utf-8"))
 # POST /api/departure-time 실제 응답 (요청: 도착 2026-12-01 15:00, 이동 20분, 나머지 BE 기본값)
 DEP_FIX = json.loads((Path(__file__).parent / "fixtures" / "be_departure_response.json").read_text(encoding="utf-8"))
+# GET /api/routes 합성 응답 (계약 §8.4 형식, 실제 녹화 아님 — 파일의 _source 참고). 키: "출발-도착"
+ROUTE_FIX = json.loads((Path(__file__).parent / "fixtures" / "be_route_responses.json").read_text(encoding="utf-8"))
+ROUTES = ROUTE_FIX["routes"]
 NOT_FOUND = {"error": {"code": "NOT_FOUND", "message": "요청한 리소스를 찾을 수 없습니다."}}
+ROUTE_NOT_FOUND = {"error": {"code": "NOT_FOUND", "message": "두 역을 잇는 경로를 찾을 수 없습니다."}}
+# BE app/services/status_messages.py (역 ID를 준 출발 시각 요청에서 붙는 문구)
+DEP_TRAIN_NOT_FOUND = "시간표에서 도착 희망 시각에 맞는 열차를 찾지 못해 추정 계산을 사용함"
+DEP_TRAIN_TRANSFER_UNSUPPORTED = "환승이 필요한 경로는 시간표로 열차를 고르지 않고 추정 계산을 사용함"
+WARN_NO_ROUTE_STATIONS = "경로를 찾지 못해 엘리베이터 경고를 확인하지 못함"
 VALIDATION_ERROR = {"error": {"code": "VALIDATION_ERROR", "message": "요청 값이 올바르지 않습니다."}}
 
 KST = timezone(timedelta(hours=9))
 # 가짜 BE의 서버 시계 (픽스처를 녹화한 날). already_past 판정이 실제 시계에 따라 바뀌지 않게 고정한다.
 FAKE_SERVER_NOW = datetime(2026, 11, 14, 12, 0, tzinfo=KST)
 DEP_SEGMENT_DEFAULTS = {"walk_to_station_minutes": 7, "station_entry_minutes": 3, "exit_walk_minutes": 3}
-DEP_FIELDS = {"arrival_at", "travel_minutes", "buffer_minutes", *DEP_SEGMENT_DEFAULTS}
+DEP_FIELDS = {"arrival_at", "travel_minutes", "buffer_minutes", "from_station_id", "to_station_id", *DEP_SEGMENT_DEFAULTS}
 DEP_STEPS = [("WALK_TO_STATION", "집에서 역까지 도보", "walk_to_station_minutes"),
              ("STATION_ENTRY", "역 진입", "station_entry_minutes"),
              ("BUFFER", "여유 시간", "buffer_minutes"),
@@ -39,8 +48,15 @@ DEP_STEPS = [("WALK_TO_STATION", "집에서 역까지 도보", "walk_to_station_
 
 
 def fake_departure(body: dict, server_now: datetime = FAKE_SERVER_NOW) -> httpx.Response:
-    """BE POST /api/departure-time을 계약 §8.2 공식으로 흉내 낸다 (녹화한 응답과 같은 모양·문구)."""
+    """BE POST /api/departure-time을 계약 §8.2 공식으로 흉내 낸다 (녹화한 응답과 같은 모양·문구).
+
+    역 ID를 주면 BE 라우터(app/routers/departure_time.py)처럼 경로 위 엘리베이터 경고를 붙인다. 시간표가 없는
+    데모 DB 기준이라 환승 없는 경로는 '맞는 열차 없음', 환승 경로는 '환승 경로' 문구로 추정 계산을 쓴다.
+    """
     if set(body) - DEP_FIELDS or "arrival_at" not in body or "travel_minutes" not in body:
+        return httpx.Response(422, json=VALIDATION_ERROR)
+    ids = (body.get("from_station_id"), body.get("to_station_id"))
+    if (ids[0] is None) != (ids[1] is None) or (ids[0] is not None and ids[0] == ids[1]):
         return httpx.Response(422, json=VALIDATION_ERROR)
     sample = DEP_FIX["response"]
     inputs = {"travel_minutes": body["travel_minutes"],
@@ -64,6 +80,19 @@ def fake_departure(body: dict, server_now: datetime = FAKE_SERVER_NOW) -> httpx.
     if already_past:
         limitations.append(BE_LIMIT_ALREADY_PAST)
     ride = timeline[3]
+    warning = {"status": "UNCONFIRMED", "items": [], "message": elevator_msg}
+    if ids[0] is not None:
+        route = ROUTES.get(f"{ids[0]}-{ids[1]}")
+        if route is None:
+            warning = {"status": "UNCONFIRMED", "items": [], "message": WARN_NO_ROUTE_STATIONS}
+        else:
+            warning = route["elevator_warning"]
+            limitations.append(DEP_TRAIN_TRANSFER_UNSUPPORTED if route["transfer_count"] else DEP_TRAIN_NOT_FOUND)
+    extra = {}
+    if ids[0] is not None:
+        # 현재 BE는 selected_train을 항상 준다(계약 §8.2). 녹화 응답(2026-11-14)은 그 전 버전이라 이 필드가 없어
+        # 녹화 재현 테스트를 위해 역 ID를 준 요청에만 넣는다.
+        extra["selected_train"] = None
     return httpx.Response(200, json={
         "recommended_departure_at": departure.isoformat(),
         "estimated_boarding_at": ride["start_at"],
@@ -77,8 +106,9 @@ def fake_departure(body: dict, server_now: datetime = FAKE_SERVER_NOW) -> httpx.
         "inputs": inputs,
         "defaults_applied": defaults_applied,
         "timeline": timeline,
-        "elevator_warning": {"status": "UNCONFIRMED", "items": [], "message": elevator_msg},
-        "limitations": limitations + [elevator_msg],
+        "elevator_warning": warning,
+        **extra,
+        "limitations": limitations + ([warning["message"]] if warning["status"] != "CLEAR" else []),
     })
 
 
@@ -88,6 +118,9 @@ def fake_be(request: httpx.Request) -> httpx.Response:
             return fake_departure(json.loads(request.content))
         return httpx.Response(405, json={"error": {"code": "METHOD_NOT_ALLOWED", "message": "x"}})
     parts = request.url.path.strip("/").split("/")  # api, stations, {id}, ...
+    if parts == ["api", "routes"]:
+        route = ROUTES.get(f"{request.url.params['from']}-{request.url.params['to']}")
+        return httpx.Response(200, json=route) if route else httpx.Response(404, json=ROUTE_NOT_FOUND)
     if parts[:2] == ["api", "elevators"]:
         return httpx.Response(200, json=FIX["elevators_status"])
     if parts[:2] == ["api", "stations"] and len(parts) >= 3:
@@ -171,12 +204,125 @@ def test_alternatives_come_from_be(be):
     assert any("검증되지 않음" in x for x in plan.limitations)
 
 
-def test_route_uses_mock_line2_by_name_and_is_estimated(be):
-    plan = plan_trip("43", "25", arrive_by="15:00")  # 신도림 → 잠실
-    assert plan.is_possible and plan.route.path[0] == "43" and plan.route.path[-1] == "25"
+def test_route_comes_from_be_route_api(be):
+    plan = plan_trip("43", "25", arrive_by="15:00", now=NOW)  # 신도림 → 잠실
+    route = ROUTES["43-25"]
+    assert plan.is_possible and plan.route_source == "BE"
+    assert plan.route.path == [str(s["station_id"]) for s in route["stations"]]
+    assert plan.route.total_duration_minutes == route["total_minutes"] == 36
+    assert plan.route.transfers == 0 and plan.route.total_stops == 18
+    assert [(leg.line_id, leg.from_id, leg.to_id, leg.stops) for leg in plan.route.legs] == [("2", "43", "25", 18)]
     assert plan.estimated is True
     assert "출발역인 신도림역 엘리베이터 상태를 확인하지 못함" in plan.limitations
-    assert plan_trip("77", "25").is_possible is False  # 고속터미널은 2호선 순환선 밖
+
+
+def test_be_route_request_uses_integer_station_ids():
+    seen = []
+
+    def handler(req):
+        if req.url.path == "/api/routes":
+            seen.append(dict(req.url.params))
+        return fake_be(req)
+
+    with use_data_source(make_source(handler)):
+        plan_trip("43", "25", now=NOW)
+    assert seen == [{"from": "43", "to": "25"}]
+
+
+def test_be_route_with_transfer_and_route_elevator_warning(be):
+    """역삼 → 고속터미널: 2호선 → 교대 환승 → 3호선 (11분 = 2+2 + 환승 5 + 2). 경유 강남은 가동 안됨."""
+    calls = []
+    with use_data_source(recording_source(calls)):
+        plan = plan_trip("30", "77", arrive_by="15:00", now=NOW)
+    route = ROUTES["30-77"]
+    assert plan.is_possible and plan.route_source == "BE" and plan.time_source == "BE"
+    assert plan.route.path == ["30", "31", "32", "77"]
+    assert plan.route.transfers == 1 and plan.route.transfer_station_ids == ["32"]
+    assert [(leg.line_id, leg.from_id, leg.to_id, leg.stops, leg.ride_minutes) for leg in plan.route.legs] == \
+        [("2", "30", "32", 2, 4), ("3", "32", "77", 1, 2)]
+    assert (plan.breakdown.subway_ride, plan.breakdown.transfer_walk) == (6, 5)
+    assert plan.route.total_duration_minutes == route["total_minutes"] == 11
+
+    # D17: 경로 소요 시간을 travel_minutes로, 역 ID(정수)를 함께 보낸다
+    assert calls[0]["travel_minutes"] == 11
+    assert (calls[0]["from_station_id"], calls[0]["to_station_id"]) == (30, 77)
+    # 15:00 − (7 + 3 + 5 + 11 + 3) = 14:31
+    assert (plan.departure_time, plan.board_time, plan.arrival_time) == ("14:31", "14:46", "15:00")
+
+    # 엘리베이터 경고: 역 ID는 문자열, 역명은 기본 이름. BE 판정을 바꾸지 않는다.
+    w = plan.elevator_warning
+    assert w.status == "WARNING" and w.message == route["elevator_warning"]["message"]
+    assert [(i.station_id, i.station_name, i.kind) for i in w.items] == \
+        [("30", "역삼", "UNCONFIRMED"), ("31", "강남", "UNAVAILABLE"), ("32", "교대", "UNCONFIRMED"),
+         ("77", "고속터미널", "UNCONFIRMED")]
+    assert "경로 위 경유역 강남역: 확인된 엘리베이터가 모두 가동 안됨." in plan.warnings
+    assert "환승역인 교대역 엘리베이터 상태를 확인하지 못함" in plan.limitations
+    assert w.message in plan.limitations
+
+    # BE limitations는 문구를 바꾸지 않고 그대로 전한다 (출발 시각 → 경로 순)
+    for x in route["limitations"] + [DEP_TRAIN_TRANSFER_UNSUPPORTED]:
+        assert x in plan.limitations
+    assert LIMIT_ESTIMATED not in plan.limitations
+    assert plan.timetable_used is False and plan.selected_train is None
+
+
+def test_be_route_not_found_is_impossible_without_estimate():
+    seen = []
+
+    def handler(req):
+        seen.append((req.method, req.url.path))
+        return fake_be(req)
+
+    with use_data_source(make_source(handler)):
+        plan = plan_trip("77", "25", arrive_by="15:00", now=NOW)  # 고속터미널 → 잠실: 가짜 BE에 경로 없음 (404)
+    assert ("GET", "/api/routes") in seen
+    assert not any(method == "POST" for method, _ in seen)  # 출발 시각을 계산하지 않는다
+    assert plan.is_possible is False and plan.route_source == "BE"
+    assert plan.warnings[0] == "고속터미널역→잠실역은 두 역을 잇는 경로를 찾지 못해 경로·출발 시각을 안내할 수 없습니다."
+    assert plan.route.legs == [] and plan.elevator_warning is None
+    assert LIMIT_ESTIMATED not in plan.limitations and LIMIT_NO_TIMETABLE not in plan.limitations
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda r: r.pop("timeline"),
+    lambda r: r.update(total_minutes=r["total_minutes"] + 1),        # timeline 합과 다름
+    lambda r: r["elevator_warning"].update(status="OK"),             # 계약 밖 상태
+    lambda r: r["timeline"][0].update(kind="WALK"),
+])
+def test_malformed_be_route_is_data_unavailable(mutate):
+    def handler(req):
+        if req.url.path == "/api/routes":
+            body = json.loads(json.dumps(ROUTES["43-25"]))
+            mutate(body)
+            return httpx.Response(200, json=body)
+        return fake_be(req)
+
+    with use_data_source(make_source(handler)):
+        with pytest.raises(DataUnavailableError):
+            plan_trip("43", "25", now=NOW)
+
+
+def test_route_api_failure_is_data_unavailable():
+    def handler(req):
+        if req.url.path == "/api/routes":
+            return httpx.Response(500, json={"error": {"code": "INTERNAL_ERROR", "message": "x"}})
+        return fake_be(req)
+
+    with use_data_source(make_source(handler)):
+        out = execute_tool("plan_trip", {"start_id": "43", "end_id": "25", "arrive_by": "15:00"}, now=NOW)
+    assert out.get("data_unavailable") is True and "departure_time" not in out
+
+
+def test_ai_time_constants_match_be_departure_defaults():
+    """AI 시간 상수가 BE 기본값과 같은지 (BE app/departure_defaults.py, 계약 §8.2 D15: 도보 7·진입 3·출구 3·대기 5).
+
+    AI는 값을 명시해서 보내므로 BE 기본값이 바뀌어도 안내는 바뀌지 않는다. 바뀌면 이 테스트와 문서를 함께 고친다.
+    """
+    t = MockDataSource().timing()
+    assert (t["home_walk"], t["station_entry_elevator"], t["exit_elevator"]) == (7, 3, 3)
+    assert t["headway_line2"] + t["safety_margin"] == 5
+    # BE 경로 가중치(역 간 2분)와 Mock 역간 이동 시간도 같다 (환승 5분은 Mock에 없음)
+    assert t["minutes_per_stop"] == 2
 
 
 def test_broken_list_groups_by_station(be):
@@ -298,12 +444,22 @@ def test_be_departure_limitations_replace_ai_estimate_phrase():
 
 def test_be_timetable_used_limitations_are_passed_through_unchanged():
     """BE가 시간표로 열차를 골랐으면(timetable_used=true) BE 문구를 그대로 전하고 AI 추정 문구는 붙이지 않는다."""
-    train_limits = ["선택한 열차는 시간표 계획 시각이라 지연이 반영되지 않음", "열차 방향은 시간표 기준 추정임"]
+    # BE 0.4절 시간표 문구 (app/services/status_messages.py)
+    train_limits = ["열차 시간표의 계획 시각으로 탑승 열차를 골랐으며 지연과 실제 운행 여부는 반영되지 않음",
+                    "열차 방향은 시간표의 정차 순서로 추정한 것이며 공식 방향 정보로 검증되지 않음"]
 
     def timetable_server(req):
         data = fake_departure(json.loads(req.content)).json()
         data["timetable_used"] = True
-        data["selected_train"] = {"train_no": "T1", "direction_inferred": True}
+        # 15:00 도착 희망 → 출구 3분 전까지 내리는 열차: 14:16 탑승, 14:50 하차 (계획 시각)
+        data["selected_train"] = {"train_no": "2178", "boarding_at": "2026-12-01T14:16:30+09:00",
+                                  "alighting_at": "2026-12-01T14:50:10+09:00", "direction_inferred": True}
+        data["recommended_departure_at"] = "2026-12-01T14:01:30+09:00"
+        data["estimated_boarding_at"] = "2026-12-01T14:16:30+09:00"
+        data["estimated_alighting_at"] = "2026-12-01T14:50:10+09:00"
+        for step in data["timeline"]:
+            if step["kind"] == "RIDE":
+                step.update(label="열차 이동(시간표 계획 시각)", minutes=34)
         data["limitations"] = train_limits + [BE_LIMIT_ELEVATOR_UNCONFIRMED]
         return httpx.Response(200, json=data)
 
@@ -313,6 +469,31 @@ def test_be_timetable_used_limitations_are_passed_through_unchanged():
     assert LIMIT_ESTIMATED not in plan.limitations
     assert BE_LIMIT_ELEVATOR_UNCONFIRMED not in plan.limitations
     assert plan.time_source == "BE" and plan.estimated is True
+    assert plan.timetable_used is True
+    assert plan.selected_train.model_dump() == {"train_no": "2178", "boarding_time": "14:16",
+                                                "alighting_time": "14:50", "direction_inferred": True}
+    assert (plan.departure_time, plan.board_time) == ("14:01", "14:16")
+    # 열차 이동은 BE 타임라인의 RIDE 구간 (입력한 경로 소요 36분이 아님)
+    assert (plan.breakdown.subway_ride, plan.breakdown.transfer_walk) == (34, 0)
+
+
+def test_be_selected_train_null_is_none(be):
+    plan = plan_trip("43", "25", arrive_by="15:00", now=NOW)
+    assert plan.timetable_used is False and plan.selected_train is None
+    # 시간표 행이 없는 데모 DB: BE가 '맞는 열차 없음' 문구를 붙이고 추정 계산을 쓴다. 문구를 그대로 전한다.
+    assert DEP_TRAIN_NOT_FOUND in plan.limitations
+    assert plan.is_possible is True  # 이 문구만으로 운행 시간 밖이라고 판정하지 않는다 (시간표 없음과 구분 불가)
+
+
+def test_malformed_selected_train_is_data_unavailable():
+    def server(req):
+        data = fake_departure(json.loads(req.content)).json()
+        data["selected_train"] = {"train_no": "T1"}  # 시각 없음
+        return httpx.Response(200, json=data)
+
+    with use_data_source(recording_source([], server)):
+        with pytest.raises(DataUnavailableError):
+            plan_trip("43", "25", arrive_by="15:00", now=NOW)
 
 
 def test_be_already_past_uses_ai_clock_not_be_server_clock():
@@ -332,8 +513,11 @@ def test_forward_mode_does_not_call_departure_api(kwargs):
     calls = []
     with use_data_source(recording_source(calls)):
         plan = plan_trip("43", "25", now=NOW, **kwargs)
-    assert calls == [] and plan.time_source == "AI"
-    assert LIMIT_ESTIMATED in plan.limitations
+    assert calls == [] and plan.time_source == "AI" and plan.route_source == "BE"
+    # BE 경로로 AI가 순방향 계산: Mock 문구("실제 경로 탐색을 쓰지 않은") 대신 시간표 미사용·구간 추정 + BE 경로 문구
+    assert LIMIT_ESTIMATED not in plan.limitations
+    assert plan.limitations[:2] == [LIMIT_NO_TIMETABLE, LIMIT_SEGMENT_ESTIMATES]
+    assert all(x in plan.limitations for x in ROUTES["43-25"]["limitations"])
     local = mock_plan("sindorim", "jamsil", now=NOW, **kwargs)
     assert {f: getattr(plan, f) for f in TIME_FIELDS} == {f: getattr(local, f) for f in TIME_FIELDS}
 
@@ -370,14 +554,21 @@ def test_departure_api_failure_is_data_unavailable(post_handler):
     assert out.get("data_unavailable") is True and "departure_time" not in out
 
 
-def test_route_questions_are_blocked_when_route_estimate_is_off():
-    """팀 결정(2026-11-14): BE 경로 API(#37) 전에는 경로·출발 시각을 추정하지 않는다 (BE_ROUTE_ESTIMATE=false)."""
-    src = BeDataSource(http=httpx.Client(base_url="http://be.test", transport=httpx.MockTransport(fake_be)),
-                       route_estimate=False)
-    with use_data_source(src):
-        plan = plan_trip("43", "25", arrive_by="15:00")
-        assert plan.is_possible is False and "BE 경로 API" in plan.warnings[0]
-        assert plan.time_source == "AI"
-        # 역·엘리베이터·대체역은 그대로 동작한다
-        assert get_elevator_status("31").overall_status == "UNAVAILABLE"
-        assert plan_trip("31", "31").detours
+def test_alternative_only_does_not_call_route_api():
+    """대체역만 묻기(출발=도착)는 BE 경로 API를 부르지 않는다 (BE는 같은 역 경로를 422로 거절)."""
+    seen = []
+
+    def handler(req):
+        seen.append(req.url.path)
+        return fake_be(req)
+
+    with use_data_source(make_source(handler)):
+        plan = plan_trip("31", "31")
+    assert "/api/routes" not in seen
+    assert plan.is_possible and plan.detours and plan.route.path == ["31"]
+
+
+def test_mock_source_has_no_route_api():
+    assert MockDataSource().route_detail("sindorim", "jamsil") is None
+    plan = mock_plan("sindorim", "jamsil", now=NOW)
+    assert plan.route_source == "AI" and plan.elevator_warning is None

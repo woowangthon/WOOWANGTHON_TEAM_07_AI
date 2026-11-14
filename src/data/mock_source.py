@@ -56,6 +56,10 @@ class MockDataSource:
         n, idx = len(loop), loop.index(station_id)
         return [loop[(idx + 1) % n], loop[(idx - 1) % n]]
 
+    def route_detail(self, start_id: str, end_id: str) -> Optional[dict]:
+        """Mock은 경로 API가 없습니다 (plan_trip이 find_route로 2호선 순환선만 계산)."""
+        return None
+
     def find_route(self, start_id: str, end_id: str) -> Optional[Tuple[List[str], int, str]]:
         """2호선 순환선에서 외선/내선 중 짧은 쪽 (같으면 외선). 순환선 밖 역이면 None."""
         loop = md.LINE_2_LOOP
@@ -72,6 +76,7 @@ class MockDataSource:
         return md.TIMING_PARAMS
 
     def departure_estimate(self, arrival_at_iso: str, travel_minutes: int, buffer_minutes: int,
-                           walk_minutes: int, entry_minutes: int, exit_minutes: int) -> Optional[dict]:
+                           walk_minutes: int, entry_minutes: int, exit_minutes: int,
+                           from_station_id: Optional[str] = None, to_station_id: Optional[str] = None) -> Optional[dict]:
         """Mock은 출발 시각을 계산하지 않습니다 (plan_trip이 직접 역산)."""
         return None

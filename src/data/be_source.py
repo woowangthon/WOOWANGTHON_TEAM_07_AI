@@ -3,8 +3,9 @@
     AI_DATA_SOURCE=be, BE_API_BASE_URL=http://127.0.0.1:8000
 
 BE가 맡는 것: 역 목록·ID, 엘리베이터 설비 상태(가동중/가동 안됨/미확인 판정, TTL), 대체역 후보(BFS),
-    도착 시각 기준 출발 시각 역산(POST /api/departure-time, 분 값은 AI가 보냄).
-AI에 남는 것: 별칭·미지원 키워드(문장 해석용), 경로·열차 이동 시간(BE 경로 API #37 전까지 Mock 2호선 계산).
+    경로(GET /api/routes, 환승 포함, 추정 소요 시간, 경로 위 엘리베이터 경고),
+    도착 시각 기준 출발 시각 역산(POST /api/departure-time, 분 값과 역 ID는 AI가 보냄. 결정 D17).
+AI에 남는 것: 별칭·미지원 키워드(문장 해석용), 도보·진입·대기·출구 시간 상수(BE 기본값과 같음).
 
 변환 규칙:
     - 역 ID: BE 정수 station_id를 문자열로 ("35"). LLM 도구 인자와 FE payload에 그대로 씁니다.
@@ -48,12 +49,9 @@ class BeDataSource:
     """BE API 데이터 소스. http 인자로 httpx.Client(또는 같은 get 인터페이스)를 넣어 테스트할 수 있습니다."""
 
     def __init__(self, base_url: str = "http://127.0.0.1:8000", timeout: float = 2.0,
-                 http: Optional[httpx.Client] = None, route_estimate: bool = True):
-        # route_estimate=False: BE 경로 API(#37) 전에는 경로·출발 시각을 추정하지 않고 "지원하지 않음"으로 답함.
-        # 운영 기본값은 설정 BE_ROUTE_ESTIMATE(false). 직접 만들 때는 True(테스트 호환).
-        self.route_estimate = route_estimate
+                 http: Optional[httpx.Client] = None):
         self._http = http or httpx.Client(base_url=base_url, timeout=timeout)
-        self._mock = MockDataSource()  # 별칭·키워드·경로·시간 상수
+        self._mock = MockDataSource()  # 시간 상수 (BE 기본값과 같음)
         self._catalog: Optional[Dict[str, dict]] = None
         self._by_name: Dict[str, str] = {}
 
@@ -199,37 +197,45 @@ class BeDataSource:
     def neighbor_stations(self, station_id: str) -> List[str]:
         return []  # BE가 대체역을 계산하므로 쓰지 않음
 
-    def _mock_id(self, station_id: str) -> Optional[str]:
-        st = self.station(station_id)
-        if not st:
-            return None
-        return next((mid for mid, m in md.STATIONS.items() if m["name"] == st["name"]), None)
+    def route_detail(self, start_id: str, end_id: str) -> dict:
+        """BE `GET /api/routes?from=&to=` (계약 §8.4)을 AI 형식으로 바꿉니다.
+
+        404는 경로 없음({"found": False}). 역 존재는 plan_trip이 먼저 확인하므로 404는 "두 역을 잇는 경로 없음"입니다.
+        필요한 필드가 없거나 모양이 다르면 DataUnavailableError. 값을 채우거나 추정하지 않습니다.
+        """
+        d = self._get("/api/routes", **{"from": int(start_id), "to": int(end_id)})
+        if d is None:
+            return {"found": False}
+        try:
+            return _convert_route(d)
+        except (KeyError, TypeError, ValueError) as e:
+            raise DataUnavailableError(f"BE 응답 해석 실패 (/api/routes): {type(e).__name__} {e}") from e
 
     def find_route(self, start_id: str, end_id: str) -> Optional[Tuple[List[str], int, str]]:
-        """BE 경로 API(#37)가 없어 Mock 2호선 순환선 계산을 역 이름으로 연결해 씁니다 (추정)."""
-        if not self.route_estimate:
+        """route_detail의 요약 (역 ID 목록, 정거장 수, 첫 노선). 경로가 없으면 None.
+
+        plan_trip은 출발≠도착이면 route_detail을 쓰고, 이 메서드는 출발=도착(대체역만 묻기)일 때만 부릅니다.
+        BE는 같은 역끼리의 경로를 422로 거절하므로 호출하지 않습니다.
+        """
+        if str(start_id) == str(end_id):
+            return [str(start_id)], 0, ""
+        r = self.route_detail(start_id, end_id)
+        if not r["found"]:
             return None
-        s, e = self._mock_id(start_id), self._mock_id(end_id)
-        if not s or not e:
-            return None
-        found = self._mock.find_route(s, e)
-        if not found:
-            return None
-        path, stops, line = found
-        be_path = [self.id_for_name(md.STATIONS[mid]["name"]) for mid in path]
-        if any(p is None for p in be_path):
-            return None
-        return be_path, stops, line
+        return r["path"], sum(leg["stops"] for leg in r["legs"]), r["legs"][0]["line_id"] if r["legs"] else ""
 
     def timing(self) -> Dict[str, int]:
         return self._mock.timing()
 
     # --- 출발 시각 ---
     def departure_estimate(self, arrival_at_iso: str, travel_minutes: int, buffer_minutes: int,
-                           walk_minutes: int, entry_minutes: int, exit_minutes: int) -> Optional[dict]:
+                           walk_minutes: int, entry_minutes: int, exit_minutes: int,
+                           from_station_id: Optional[str] = None, to_station_id: Optional[str] = None) -> Optional[dict]:
         """BE `POST /api/departure-time` (계약 §8.2)으로 권장 출발 시각을 계산합니다.
 
-        분 값은 모두 명시해서 보냅니다 (BE 기본값, 특히 buffer 0분에 맡기지 않음).
+        분 값은 모두 명시해서 보냅니다. AI 값(도보 7·진입 3·대기 5·출구 3)은 BE 기본값과 같지만,
+        사용자가 도보 시간을 바꿀 수 있고 BE 기본값이 바뀌어도 AI 안내와 어긋나지 않게 하려는 것입니다.
+        역 ID를 함께 주면 BE가 경로 위 엘리베이터 경고를 계산하고 시간표로 열차를 고를 수 있습니다.
         응답에 필요한 시각 필드가 없으면 해석 실패로 봅니다.
         """
         body = {
@@ -240,8 +246,68 @@ class BeDataSource:
             "station_entry_minutes": entry_minutes,
             "exit_walk_minutes": exit_minutes,
         }
+        if from_station_id is not None and to_station_id is not None:
+            body["from_station_id"] = int(from_station_id)
+            body["to_station_id"] = int(to_station_id)
         d = self._post("/api/departure-time", body)
         required = ("recommended_departure_at", "estimated_boarding_at", "arrival_at")
         if any(not isinstance(d.get(k), str) for k in required):
             raise DataUnavailableError("BE 응답 해석 실패 (/api/departure-time): 시각 필드 없음")
+        train = d.get("selected_train")
+        if train is not None and not (isinstance(train, dict) and all(
+                isinstance(train.get(k), str) for k in ("train_no", "boarding_at", "alighting_at"))):
+            raise DataUnavailableError("BE 응답 해석 실패 (/api/departure-time): selected_train 형식")
+        if d.get("elevator_warning") is not None:
+            try:
+                d["elevator_warning"] = _convert_warning(d["elevator_warning"])
+            except (KeyError, TypeError, ValueError) as e:
+                raise DataUnavailableError("BE 응답 해석 실패 (/api/departure-time): elevator_warning 형식") from e
         return d
+
+
+WARNING_STATUSES = ("WARNING", "UNCONFIRMED", "CLEAR")
+WARNING_KINDS = ("UNAVAILABLE", "PARTIAL", "UNCONFIRMED")
+
+
+def _convert_warning(w: dict) -> dict:
+    """BE elevator_warning (계약 §8.4) → 역 ID 문자열, 기본 역명. status·kind가 계약 밖 값이면 ValueError."""
+    if w["status"] not in WARNING_STATUSES:
+        raise ValueError(f"elevator_warning.status {w['status']!r}")
+    items = []
+    for it in w["items"]:
+        if it["kind"] not in WARNING_KINDS:
+            raise ValueError(f"elevator_warning.items[].kind {it['kind']!r}")
+        items.append({"station_id": str(it["station_id"]), "station_name": base_name(it["station_name"]),
+                      "kind": it["kind"], "message": str(it["message"])})
+    return {"status": w["status"], "items": items, "message": str(w["message"])}
+
+
+def _convert_route(d: dict) -> dict:
+    """BE GET /api/routes 응답 → plan_trip이 쓰는 형식 (source.DataSource.route_detail 참고)."""
+    path = [str(st["station_id"]) for st in d["stations"]]
+    if len(path) < 2:
+        raise ValueError("stations가 2개 미만")
+    legs, ride, transfer = [], 0, 0
+    transfer_ids: List[str] = []
+    for step in d["timeline"]:
+        minutes = int(step["minutes"])
+        if step["kind"] == "RIDE":
+            legs.append({"line_id": str(step["line_id"]), "from_id": str(step["from_station"]["station_id"]),
+                         "to_id": str(step["to_station"]["station_id"]), "stops": int(step["stops"]),
+                         "ride_minutes": minutes})
+            ride += minutes
+        elif step["kind"] == "TRANSFER":
+            transfer_ids.append(str(step["station"]["station_id"]))
+            transfer += minutes
+        else:
+            raise ValueError(f"timeline.kind {step['kind']!r}")
+    total = int(d["total_minutes"])
+    if not legs or total != ride + transfer:
+        raise ValueError("timeline과 total_minutes가 맞지 않음")
+    return {
+        "found": True, "path": path, "legs": legs, "transfer_station_ids": transfer_ids,
+        "transfers": int(d["transfer_count"]), "total_minutes": total,
+        "ride_minutes": ride, "transfer_minutes": transfer,
+        "elevator_warning": _convert_warning(d["elevator_warning"]),
+        "limitations": [x for x in d["limitations"] if isinstance(x, str)],
+    }

@@ -130,7 +130,36 @@ class RouteInfo(BaseModel):
     legs: List[RouteLeg]
     total_stops: int
     transfers: int
-    total_duration_minutes: int
+    total_duration_minutes: int = Field(
+        ..., description="열차 이동 + 환승 시간(분). BE 경로면 GET /api/routes의 total_minutes (추정값)"
+    )
+    transfer_station_ids: List[str] = Field(default_factory=list, description="환승역 ID (경로 순서)")
+
+
+class RouteWarningItem(BaseModel):
+    """BE 경로 엘리베이터 경고의 역 하나 (BE elevator_warning.items[])."""
+    station_id: str
+    station_name: str
+    kind: Literal["UNAVAILABLE", "PARTIAL", "UNCONFIRMED"]
+    message: str
+
+
+class RouteElevatorWarning(BaseModel):
+    """BE가 경로 위 모든 역을 판정한 엘리베이터 경고 (BE/docs/api-contract.md §8.4).
+
+    CLEAR는 '확인된 설비 기준'이라는 뜻이지 이용 가능 보장이 아닙니다.
+    """
+    status: Literal["WARNING", "UNCONFIRMED", "CLEAR"]
+    items: List[RouteWarningItem] = Field(default_factory=list)
+    message: str
+
+
+class SelectedTrain(BaseModel):
+    """BE가 시간표로 고른 열차 (BE selected_train). 계획 시각이며 지연은 반영되지 않습니다."""
+    train_no: str
+    boarding_time: str = Field(..., description="계획 탑승 시각 HH:MM (KST)")
+    alighting_time: str = Field(..., description="계획 하차 시각 HH:MM (KST)")
+    direction_inferred: bool = Field(True, description="열차 방향을 시간표 정차 순서로 추정했는지 (BE는 항상 true)")
 
 
 class DetourInfo(BaseModel):
@@ -176,6 +205,16 @@ class PlanTripOutput(BaseModel):
     time_source: Literal["AI", "BE"] = Field(
         "AI", description="출발·탑승·도착 시각을 계산한 곳. BE면 BE /api/departure-time 역산 결과 (분 값은 AI가 보냄)"
     )
+    route_source: Literal["AI", "BE"] = Field(
+        "AI", description="경로를 계산한 곳. BE면 GET /api/routes 결과, AI면 Mock 2호선 순환선 계산"
+    )
+    elevator_warning: Optional[RouteElevatorWarning] = Field(
+        None, description="BE가 판정한 경로 위 모든 역의 엘리베이터 경고. BE 경로가 아니면 None"
+    )
+    timetable_used: bool = Field(
+        False, description="BE가 열차 시간표로 탑승 열차를 골랐는지. true여도 계획 시각이라 지연은 반영되지 않음"
+    )
+    selected_train: Optional[SelectedTrain] = Field(None, description="BE가 시간표로 고른 열차. 없으면 None")
 
 
 # -----------------------------------------------------------------------------

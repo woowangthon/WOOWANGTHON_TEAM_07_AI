@@ -387,7 +387,8 @@ class FallbackEngine:
         else:
             lines.append(
                 f"{origin_name}역에서 {dest_name}역으로 {plan.departure_time}에 출발하시면 "
-                f"{plan.arrival_time}경 도착합니다. (열차 {plan.route.total_stops}개 역, 엘리베이터·대기 여유 포함)"
+                f"{plan.arrival_time}경 도착합니다. (열차 {plan.route.total_stops}개 역"
+                f"{f', 환승 {plan.route.transfers}회' if plan.route.transfers else ''}, 엘리베이터·대기 여유 포함)"
             )
         lines += [f"⚠️ {w}" for w in plan.warnings]
         lines += format_limitations(plan.limitations)

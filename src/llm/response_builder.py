@@ -50,6 +50,7 @@ class BuiltResponse:
     safe_text: str
     data_updated_at: Optional[str] = None  # 고른 도구 결과의 updated_at. 수집 시각이 없는 결과(경로·도움말 등)는 None
     limitations: List[str] = field(default_factory=list)  # safe_text에 들어간 한계 안내 (LLM 문장에도 강제)
+    warnings: List[str] = field(default_factory=list)  # safe_text에 들어간 경로 경고 (경유·환승역 고장 등, LLM 문장에도 강제)
 
 
 def _with_limits(text: str, limitations: List[str]) -> str:
@@ -66,6 +67,11 @@ def _last(results: List[ToolResult], name: str, pred=lambda r: True) -> Optional
 
 def _is_route(r: ToolResult) -> bool:
     return r.args.get("start_id") != r.args.get("end_id")
+
+
+def _transfer_note(transfers: int) -> str:
+    """경로 요약의 환승 횟수 (BE 경로만 환승이 있음). 없으면 빈 문자열."""
+    return f", 환승 {transfers}회" if transfers else ""
 
 
 def _detour_actions(detours: List[dict]) -> List[ActionPayload]:
@@ -99,7 +105,7 @@ def _trip(r: ToolResult) -> BuiltResponse:
     else:
         lines = [
             f"{origin}역에서 {dest}역으로 {plan['departure_time']}에 출발하시면 {plan['arrival_time']}경 도착합니다. "
-            f"(열차 {plan['route']['total_stops']}개 역, 엘리베이터·대기 여유 포함)"
+            f"(열차 {plan['route']['total_stops']}개 역{_transfer_note(plan['route']['transfers'])}, 엘리베이터·대기 여유 포함)"
         ]
     lines += [f"⚠️ {w}" for w in plan["warnings"]]
 
@@ -110,7 +116,7 @@ def _trip(r: ToolResult) -> BuiltResponse:
     )]
     actions += _detour_actions(plan["detours"])
     return BuiltResponse("trip_plan", actions, suggestions, _with_limits("\n".join(lines), limits),
-                         limitations=limits)
+                         limitations=limits, warnings=list(plan["warnings"]))
 
 
 def _elevator(r: ToolResult, results: List[ToolResult]) -> BuiltResponse:
