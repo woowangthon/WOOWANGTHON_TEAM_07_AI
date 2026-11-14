@@ -296,6 +296,25 @@ def test_be_departure_limitations_replace_ai_estimate_phrase():
     assert not any("엘리베이터 경고" in w for w in plan.warnings)  # 경고를 만들지 않음
 
 
+def test_be_timetable_used_limitations_are_passed_through_unchanged():
+    """BE가 시간표로 열차를 골랐으면(timetable_used=true) BE 문구를 그대로 전하고 AI 추정 문구는 붙이지 않는다."""
+    train_limits = ["선택한 열차는 시간표 계획 시각이라 지연이 반영되지 않음", "열차 방향은 시간표 기준 추정임"]
+
+    def timetable_server(req):
+        data = fake_departure(json.loads(req.content)).json()
+        data["timetable_used"] = True
+        data["selected_train"] = {"train_no": "T1", "direction_inferred": True}
+        data["limitations"] = train_limits + [BE_LIMIT_ELEVATOR_UNCONFIRMED]
+        return httpx.Response(200, json=data)
+
+    with use_data_source(recording_source([], timetable_server)):
+        plan = plan_trip("43", "25", arrive_by="15:00", now=NOW)
+    assert plan.limitations[:2] == train_limits
+    assert LIMIT_ESTIMATED not in plan.limitations
+    assert BE_LIMIT_ELEVATOR_UNCONFIRMED not in plan.limitations
+    assert plan.time_source == "BE" and plan.estimated is True
+
+
 def test_be_already_past_uses_ai_clock_not_be_server_clock():
     """BE 서버 시계로 '이미 지났음'이라 해도 AI 기준 시각으로 늦지 않았으면 늦었다고 하지 않는다."""
     late_server = lambda req: fake_departure(json.loads(req.content), server_now=datetime(2099, 1, 1, tzinfo=KST))

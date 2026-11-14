@@ -169,7 +169,7 @@ class PlanTripOutput(BaseModel):
     detours: List[DetourInfo] = Field(default_factory=list)
     breakdown: TripBreakdown
     warnings: List[str] = Field(default_factory=list)
-    estimated: bool = Field(True, description="시간표·실측이 아닌 추정 계산인지 (현재 항상 True)")
+    estimated: bool = Field(True, description="실측이 아닌 추정·계획 값인지. 항상 True (BE가 시간표로 열차를 골라도 계획 시각이라 지연은 반영되지 않음)")
     limitations: List[str] = Field(
         default_factory=list, description="사용자에게 그대로 전할 한계 안내 문장 (추정 계산, 미확인 상태 등)"
     )
